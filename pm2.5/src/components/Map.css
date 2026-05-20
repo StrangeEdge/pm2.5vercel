@@ -1,0 +1,49 @@
+.map-container {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+.map-container :global(.leaflet-container) {
+  height: 100%;
+  width: 100%;
+  z-index: 1;
+}
+
+.map-container :global(.leaflet-popup-content-wrapper) {
+  border-radius: 8px;
+  background-color: #f9f9f9;
+  padding: 0;
+}
+
+.map-container :global(.leaflet-popup-tip) {
+  background-color: #f9f9f9;
+}
+
+.popup-content {
+  padding: 12px;
+  font-size: 12px;
+}
+
+.popup-content h4 {
+  margin: 0 0 8px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+}
+
+.popup-content p {
+  margin: 4px 0;
+  color: #666;
+}
+
+.popup-pm25 {
+  color: #0066cc;
+  font-weight: 600;
+}
+
+.popup-time {
+  font-size: 11px;
+  color: #999;
+  margin-top: 8px;
+}
