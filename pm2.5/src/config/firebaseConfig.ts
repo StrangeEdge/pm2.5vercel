@@ -2,7 +2,6 @@ import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
-// TODO: Replace with your Firebase project credentials
 const firebaseConfig = {
   apiKey: "AIzaSyDYauzEr-zZabiMK15OCWq_6acjyPxjH9w",
   authDomain: "thesis-1dbf3.firebaseapp.com",

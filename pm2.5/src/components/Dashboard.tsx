@@ -1,11 +1,10 @@
 import { useState, useEffect } from 'react';
 import type { SensorReading, Vehicle } from '../data/dummyData';
-import { generateDummyData } from '../data/dummyData';
 import StatsHeader from './StatsHeader';
 import MapComponent from './Map';
 import LeftSidebar from './LeftSidebar';
 import RightSidebar from './RightSidebar';
-import { getDataForDay } from '../utils/firebaseDataHelpers';
+import { getRealtimeData, subscribeToRealtimeData } from '../utils/realtimeDatabaseHelpers';
 import './Dashboard.css';
 
 const Dashboard: React.FC = () => {
@@ -15,48 +14,45 @@ const Dashboard: React.FC = () => {
   const [isLive, setIsLive] = useState(true);
   const [isPaused, setIsPaused] = useState(false);
   const [selectedSensor, setSelectedSensor] = useState<SensorReading | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  // Real-time polling effect
+  // Set up real-time data subscription
   useEffect(() => {
-    if (isPaused) return;
+    if (isPaused) {
+      setLoading(false);
+      return;
+    }
 
-    const fetchLatestData = async () => {
+    // Initial fetch
+    const initialFetch = async () => {
       try {
-        const today = new Date();
-        const result = await getDataForDay(today);
-        const readings = result.readings as SensorReading[];
-        const vehiclesList = result.vehicles as Vehicle[];
-
-        // Use dummy data if Firebase returns no results (development fallback)
-        if (readings.length === 0 && vehiclesList.length === 0) {
-          const dummyData = generateDummyData();
-          setSensorReadings(dummyData.sensorReadings);
-          setVehicles(dummyData.vehicles);
-        } else {
-          setSensorReadings(readings);
-          setVehicles(vehiclesList);
-        }
-
+        const data = await getRealtimeData();
+        setSensorReadings(data.sensorReadings);
+        setVehicles(data.vehicles);
+        setError(null);
         setIsLive(true);
-        setLoading(false);
       } catch (err) {
-        console.error('Error fetching real-time data:', err);
-        // Fallback to dummy data on error
-        const dummyData = generateDummyData();
-        setSensorReadings(dummyData.sensorReadings);
-        setVehicles(dummyData.vehicles);
+        console.error('Error fetching initial data:', err);
+        setError('Failed to connect to Firebase');
         setIsLive(false);
+      } finally {
         setLoading(false);
       }
     };
 
-    // Initial fetch
-    fetchLatestData();
+    initialFetch();
 
-    // Set up polling every 3 seconds
-    const pollInterval = setInterval(fetchLatestData, 3000);
+    // Subscribe to real-time updates
+    const unsubscribe = subscribeToRealtimeData((data) => {
+      setSensorReadings(data.sensorReadings);
+      setVehicles(data.vehicles);
+      setIsLive(true);
+      setError(null);
+    });
 
-    return () => clearInterval(pollInterval);
+    return () => {
+      unsubscribe();
+    };
   }, [isPaused]);
 
   // Auto-select first sensor when data loads
@@ -74,11 +70,35 @@ const Dashboard: React.FC = () => {
     setSelectedSensor(sensor);
   };
 
-  if (loading && sensorReadings.length === 0) {
+  if (loading) {
     return (
       <div className="dashboard-loading">
         <div className="spinner"></div>
-        <p>Loading live data from Firebase...</p>
+        <p>Loading data from Firebase Realtime Database...</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="dashboard-loading">
+        <div className="error-icon">⚠️</div>
+        <p>Error: {error}</p>
+        <p style={{ fontSize: '12px', marginTop: '10px' }}>
+          Make sure Firebase Realtime Database is properly configured.
+        </p>
+      </div>
+    );
+  }
+
+  if (sensorReadings.length === 0 && vehicles.length === 0) {
+    return (
+      <div className="dashboard-loading">
+        <div className="info-icon">ℹ️</div>
+        <p>No data available from Firebase</p>
+        <p style={{ fontSize: '12px', marginTop: '10px' }}>
+          Make sure data exists in your Realtime Database at path: /pm25_data
+        </p>
       </div>
     );
   }
