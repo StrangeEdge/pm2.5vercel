@@ -19,8 +19,8 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  color: #333;
-  background: #f5f7fa;
+  color: #e0e6ed;
+  background: #0d1117;
 }
 
 code {
@@ -32,4 +32,3 @@ code {
   width: 100vw;
   height: 100vh;
 }
-
