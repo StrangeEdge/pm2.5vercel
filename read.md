@@ -32,5 +32,6 @@
 - read html components and its corresponding css style to match if it satisfied the instruction.
 
 
+Python interface invoke script
 
-
+python sensor_simulator_rest.py

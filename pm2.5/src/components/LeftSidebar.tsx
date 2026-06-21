@@ -12,15 +12,23 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
   selectedSensor,
   onSelectSensor,
 }) => {
-  const formatTimestamp = (timestamp: any): string => {
-    if (timestamp && typeof timestamp.toDate === 'function') {
-      const date = timestamp.toDate();
-      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const formatTimestamp = (timestamp: unknown): string => {
+    let date: Date | null = null;
+
+    if (timestamp && typeof timestamp === 'object' && 'toDate' in timestamp && typeof timestamp.toDate === 'function') {
+      date = timestamp.toDate();
+    } else if (timestamp instanceof Date) {
+      date = timestamp;
     }
-    if (timestamp instanceof Date) {
-      return timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    }
-    return 'N/A';
+
+    if (!date) return 'N/A';
+
+    return date.toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    });
   };
 
   const getStatusColor = (status: string): string => {
@@ -41,63 +49,58 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
   const getStatusLabel = (status: string): string => {
     switch (status) {
       case 'good':
-        return 'Good';
+        return 'GOOD';
       case 'moderate':
-        return 'Moderate';
+        return 'MODERATE';
       case 'unhealthy_for_sensitive':
-        return 'Unhealthy Sensitive';
+        return 'UNHEALTHY*';
       case 'unhealthy':
-        return 'Unhealthy';
+        return 'UNHEALTHY';
       default:
-        return 'Unknown';
+        return 'UNKNOWN';
     }
   };
 
   return (
     <aside className="left-sidebar">
       <div className="sidebar-header">
-        <h2>FIELD UNITS</h2>
-        <span className="field-count">
-          {sensorReadings.length} ONLINE
-        </span>
+        <span className="sidebar-title">FIELD UNITS</span>
+        <span className="sidebar-divider">·</span>
+        <span className="field-count">{sensorReadings.length} ONLINE</span>
       </div>
 
       <div className="sensor-list">
-        {sensorReadings.map((reading) => (
-          <div
-            key={reading.id}
-            className={`sensor-item ${selectedSensor?.id === reading.id ? 'selected' : ''}`}
-            onClick={() => onSelectSensor(reading)}
-          >
-            <div className="sensor-header">
-              <h3 className="sensor-name">{reading.location.name}</h3>
-              <span className="sensor-time">{formatTimestamp(reading.timestamp)}</span>
-            </div>
+        {sensorReadings.map((reading) => {
+          const statusColor = getStatusColor(reading.status);
 
-            <div className="sensor-value-row">
-              <div className="pm25-display">
-                <span className="pm25-large" style={{ color: getStatusColor(reading.status) }}>
-                  {reading.pm25}
-                </span>
-                <span className="pm25-unit">μg/m³</span>
+          return (
+            <div
+              key={reading.id}
+              className={`sensor-item ${selectedSensor?.id === reading.id ? 'selected' : ''}`}
+              onClick={() => onSelectSensor(reading)}
+            >
+              <div className="sensor-card-grid">
+                <h3 className="sensor-name">{reading.location.name}</h3>
+                <div className="pm25-value" style={{ color: statusColor }}>
+                  {Number(reading.pm25).toFixed(1)}
+                </div>
+
+                <div
+                  className="status-badge"
+                  style={{
+                    color: statusColor,
+                    borderColor: statusColor,
+                  }}
+                >
+                  {getStatusLabel(reading.status)}
+                </div>
+                <span className="pm25-unit">µg/m³</span>
+
+                <span className="sensor-time">{formatTimestamp(reading.timestamp)}</span>
               </div>
-
-              <div
-                className="status-badge"
-                style={{
-                  backgroundColor: getStatusColor(reading.status),
-                  color: reading.status === 'moderate' ? '#000' : '#fff',
-                }}
-              >
-                {getStatusLabel(reading.status)}
-              </div>
             </div>
-
-            <div className="sensor-footer">
-              <span className="live-indicator-small">● LIVE</span>
-            </div>
-          </div>
-        ))}
+          );
+        })}
 
         {sensorReadings.length === 0 && (
           <div className="no-sensors">

@@ -62,6 +62,16 @@ const Dashboard: React.FC = () => {
     }
   }, [sensorReadings, selectedSensor]);
 
+  // Keep selected sensor in sync with live updates
+  useEffect(() => {
+    if (!selectedSensor) return;
+
+    const updatedSensor = sensorReadings.find((reading) => reading.id === selectedSensor.id);
+    if (updatedSensor && updatedSensor !== selectedSensor) {
+      setSelectedSensor(updatedSensor);
+    }
+  }, [sensorReadings, selectedSensor]);
+
   const handleTogglePause = () => {
     setIsPaused(!isPaused);
   };
@@ -124,7 +134,10 @@ const Dashboard: React.FC = () => {
 
         <div className="center-panel">
           {sensorReadings.length > 0 || vehicles.length > 0 ? (
-            <MapComponent sensorReadings={sensorReadings} vehicles={vehicles} />
+            <MapComponent
+              sensorReadings={sensorReadings}
+              selectedSensor={selectedSensor}
+            />
           ) : (
             <div className="no-data-map">
               <p>No data available</p>

@@ -1,6 +1,39 @@
 // Las Piñas, Philippines coordinates: ~14.3534° N, 120.9895° E
 // Dummy data for PM2.5 sensor readings and vehicle detection
 
+export interface VehicleCounts {
+  Car: number;
+  Van: number;
+  Jeepney: number;
+  Truck: number;
+  Tricycle: number;
+  Motorcycle: number;
+  Bus: number;
+}
+
+export const VEHICLE_TYPES: (keyof VehicleCounts)[] = [
+  'Car',
+  'Van',
+  'Jeepney',
+  'Truck',
+  'Tricycle',
+  'Motorcycle',
+  'Bus',
+];
+
+export const emptyVehicleCounts = (): VehicleCounts => ({
+  Car: 0,
+  Van: 0,
+  Jeepney: 0,
+  Truck: 0,
+  Tricycle: 0,
+  Motorcycle: 0,
+  Bus: 0,
+});
+
+export const totalVehicleCount = (vehicles: VehicleCounts): number =>
+  VEHICLE_TYPES.reduce((sum, type) => sum + (vehicles[type] || 0), 0);
+
 export interface SensorReading {
   id: string;
   pm25: number; // μg/m³
@@ -11,11 +44,12 @@ export interface SensorReading {
   };
   timestamp: Date;
   status: 'good' | 'moderate' | 'unhealthy_for_sensitive' | 'unhealthy';
+  vehicles: VehicleCounts;
 }
 
 export interface Vehicle {
   id: string;
-  type: 'car' | 'truck' | 'motorcycle' | 'bus';
+  type: 'car' | 'van' | 'jeepney' | 'truck' | 'tricycle' | 'motorcycle' | 'bus';
   detectedAt: Date;
   location: {
     lat: number;
@@ -57,14 +91,26 @@ export const generateDummyData = (): DashboardData => {
       location: loc,
       timestamp: new Date(now.getTime() - Math.random() * 3600000), // Within last hour
       status,
+      vehicles: {
+        Car: Math.floor(Math.random() * 8),
+        Van: Math.floor(Math.random() * 4),
+        Jeepney: Math.floor(Math.random() * 6),
+        Truck: Math.floor(Math.random() * 5),
+        Tricycle: Math.floor(Math.random() * 4),
+        Motorcycle: Math.floor(Math.random() * 6),
+        Bus: Math.floor(Math.random() * 3),
+      },
     };
   });
 
   // Generate vehicle detection data
   const vehicles: Vehicle[] = [];
-  const vehicleTypes: Array<'car' | 'truck' | 'motorcycle' | 'bus'> = [
+  const vehicleTypes: Array<Vehicle['type']> = [
     'car',
+    'van',
+    'jeepney',
     'truck',
+    'tricycle',
     'motorcycle',
     'bus',
   ];

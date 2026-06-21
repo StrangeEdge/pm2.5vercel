@@ -11,7 +11,7 @@
 
 .dashboard-content {
   display: grid;
-  grid-template-columns: 250px 1fr 280px;
+  grid-template-columns: 180px 1fr 280px;
   gap: 0;
   overflow: hidden;
   height: 100%;
@@ -87,13 +87,13 @@
 /* Responsive design for tablets and smaller screens */
 @media (max-width: 1400px) {
   .dashboard-content {
-    grid-template-columns: 200px 1fr 250px;
+    grid-template-columns: 170px 1fr 250px;
   }
 }
 
 @media (max-width: 1200px) {
   .dashboard-content {
-    grid-template-columns: 180px 1fr 220px;
+    grid-template-columns: 160px 1fr 220px;
   }
 }
 

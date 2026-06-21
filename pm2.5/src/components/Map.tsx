@@ -1,52 +1,66 @@
-import { MapContainer, TileLayer, Marker, Popup, CircleMarker } from 'react-leaflet';
-import L from 'leaflet';
+import { useEffect } from 'react';
+import { MapContainer, TileLayer, Popup, CircleMarker, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
-import type { SensorReading, Vehicle } from '../data/dummyData';
+import type { SensorReading, VehicleCounts } from '../data/dummyData';
+import { VEHICLE_TYPES, totalVehicleCount } from '../data/dummyData';
 import './Map.css';
-
-// Fix for default marker icons
-delete (L.Icon.Default.prototype as any)._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
-  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
-  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
-});
 
 interface MapProps {
   sensorReadings: SensorReading[];
-  vehicles: Vehicle[];
+  selectedSensor: SensorReading | null;
 }
 
-// Helper function to encode SVG to base64 data URL
-const encodeSvgToDataUrl = (svg: string): string => {
-  const encoded = encodeURIComponent(svg);
-  return `data:image/svg+xml,${encoded}`;
+const getStatusColor = (status: SensorReading['status']): string => {
+  switch (status) {
+    case 'good':
+      return '#21db15';
+    case 'moderate':
+      return '#ffd700';
+    case 'unhealthy_for_sensitive':
+      return '#ffa500';
+    case 'unhealthy':
+      return '#ff3333';
+    default:
+      return '#8892a0';
+  }
 };
 
-const MapComponent: React.FC<MapProps> = ({ sensorReadings, vehicles }) => {
+const MapFlyTo: React.FC<{ center: [number, number]; zoom: number }> = ({ center, zoom }) => {
+  const map = useMap();
+
+  useEffect(() => {
+    map.flyTo(center, zoom, { duration: 0.8 });
+  }, [map, center[0], center[1], zoom]);
+
+  return null;
+};
+
+const MapComponent: React.FC<MapProps> = ({ sensorReadings, selectedSensor }) => {
   const lasPinasCenter: [number, number] = [14.3534, 120.9895];
+  const mapCenter: [number, number] = selectedSensor
+    ? [selectedSensor.location.lat, selectedSensor.location.lng]
+    : lasPinasCenter;
 
-  const getColorByPM25 = (pm25: number | undefined): string => {
-    const value = pm25 || 0;
-    if (value <= 35) return '#00ff00'; // Good - Green
-    if (value <= 75) return '#ffff00'; // Moderate - Yellow
-    if (value <= 115) return '#ff7700'; // Unhealthy for sensitive - Orange
-    return '#ff0000'; // Unhealthy - Red
-  };
+  const validReadings = sensorReadings.filter(
+    (reading) => reading.location?.lat != null && reading.location?.lng != null
+  );
 
-  const getVehicleColor = (type: string): string => {
-    switch (type) {
-      case 'car':
-        return '#0066cc';
-      case 'truck':
-        return '#ff6600';
-      case 'motorcycle':
-        return '#00cc00';
-      case 'bus':
-        return '#9900cc';
-      default:
-        return '#666666';
-    }
+  // Render selected marker last so it appears on top when sensors share coordinates
+  const sortedReadings = [...validReadings].sort((a, b) => {
+    if (selectedSensor?.id === a.id) return 1;
+    if (selectedSensor?.id === b.id) return -1;
+    return 0;
+  });
+
+  const formatVehicleSummary = (vehicles: VehicleCounts): string => {
+    const parts = VEHICLE_TYPES
+      .map((type) => {
+        const count = vehicles[type] || 0;
+        return count > 0 ? `${type}: ${count}` : null;
+      })
+      .filter(Boolean);
+
+    return parts.length > 0 ? parts.join(', ') : 'No vehicles detected';
   };
 
   const formatTimestamp = (timestamp: any): string => {
@@ -63,25 +77,32 @@ const MapComponent: React.FC<MapProps> = ({ sensorReadings, vehicles }) => {
 
   return (
     <div className="map-container">
-      <MapContainer center={lasPinasCenter} zoom={14} scrollWheelZoom={false} style={{ height: '100%', width: '100%', background: '#e0e0e0' }}>
+      <MapContainer center={lasPinasCenter} zoom={14} scrollWheelZoom={false} className="dark-map" style={{ height: '100%', width: '100%' }}>
+        {selectedSensor && (
+          <MapFlyTo center={mapCenter} zoom={15} />
+        )}
+
         <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-          url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+          url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+          subdomains={['a', 'b', 'c', 'd']}
           crossOrigin=""
         />
 
         {/* Sensor Reading Markers */}
-        {sensorReadings
-          .filter(reading => reading.location && reading.location.lat && reading.location.lng)
-          .map((reading) => (
+        {sortedReadings.map((reading) => {
+          const isSelected = selectedSensor?.id === reading.id;
+          const markerColor = getStatusColor(reading.status);
+
+          return (
           <CircleMarker
-            key={reading.id}
+            key={`${reading.id}-${reading.pm25}-${reading.status}`}
             center={[reading.location.lat, reading.location.lng]}
-            radius={15}
-            fillColor={getColorByPM25(reading.pm25)}
-            fillOpacity={0.7}
-            weight={2}
-            color={getColorByPM25(reading.pm25)}
+            radius={isSelected ? 18 : 12}
+            fillColor={markerColor}
+            fillOpacity={isSelected ? 0.9 : 0.55}
+            weight={isSelected ? 3 : 2}
+            color={isSelected ? '#1a1a2e' : markerColor}
           >
             <Popup>
               <div className="popup-content">
@@ -92,49 +113,16 @@ const MapComponent: React.FC<MapProps> = ({ sensorReadings, vehicles }) => {
                 <p>
                   <strong>Status:</strong> {reading.status.replace('_', ' ')}
                 </p>
+                <p>
+                  <strong>Vehicles:</strong> {totalVehicleCount(reading.vehicles)}
+                </p>
+                <p className="popup-vehicles">{formatVehicleSummary(reading.vehicles)}</p>
                 <p className="popup-time">
                   {formatTimestamp(reading.timestamp)}
                 </p>
               </div>
             </Popup>
           </CircleMarker>
-        ))}
-
-        {/* Vehicle Detection Markers */}
-        {vehicles
-          .filter(vehicle => vehicle.location && vehicle.location.lat && vehicle.location.lng)
-          .map((vehicle) => {
-          const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 30 30">
-            <circle cx="15" cy="15" r="12" fill="${getVehicleColor(vehicle.type)}" stroke="white" stroke-width="2"/>
-            <text x="15" y="20" text-anchor="middle" fill="white" font-size="12" font-weight="bold">
-              ${vehicle.type.charAt(0).toUpperCase()}
-            </text>
-          </svg>`;
-
-          return (
-            <Marker
-              key={vehicle.id}
-              position={[vehicle.location.lat, vehicle.location.lng]}
-              icon={L.icon({
-                iconUrl: encodeSvgToDataUrl(svg),
-                iconSize: [30, 30],
-                iconAnchor: [15, 15],
-              })}
-            >
-              <Popup>
-                <div className="popup-content">
-                  <p>
-                    <strong>Type:</strong> {vehicle.type}
-                  </p>
-                  <p>
-                    <strong>Confidence:</strong> {(vehicle.confidence * 100).toFixed(1)}%
-                  </p>
-                  <p className="popup-time">
-                    Detected: {formatTimestamp(vehicle.detectedAt)}
-                  </p>
-                </div>
-              </Popup>
-            </Marker>
           );
         })}
       </MapContainer>

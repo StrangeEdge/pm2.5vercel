@@ -1,4 +1,5 @@
-import type { SensorReading, Vehicle } from '../data/dummyData';
+import type { SensorReading, Vehicle, VehicleCounts } from '../data/dummyData';
+import { VEHICLE_TYPES, totalVehicleCount } from '../data/dummyData';
 import './RightSidebar.css';
 
 interface RightSidebarProps {
@@ -7,9 +8,18 @@ interface RightSidebarProps {
   selectedSensor: SensorReading | null;
 }
 
+const VEHICLE_DISPLAY = [
+  { name: 'Car', key: 'Car' as keyof VehicleCounts, icon: '🚗', color: '#3b82f6' },
+  { name: 'Van', key: 'Van' as keyof VehicleCounts, icon: '🚐', color: '#8b5cf6' },
+  { name: 'Jeepney', key: 'Jeepney' as keyof VehicleCounts, icon: '🚐', color: '#06b6d4' },
+  { name: 'Truck', key: 'Truck' as keyof VehicleCounts, icon: '🚚', color: '#ef4444' },
+  { name: 'Tricycle', key: 'Tricycle' as keyof VehicleCounts, icon: '🛺', color: '#ffa500' },
+  { name: 'Motorcycle', key: 'Motorcycle' as keyof VehicleCounts, icon: '🏍️', color: '#f59e0b' },
+  { name: 'Bus', key: 'Bus' as keyof VehicleCounts, icon: '🚌', color: '#8b5cf6' },
+];
+
 const RightSidebar: React.FC<RightSidebarProps> = ({
   sensorReadings,
-  vehicles,
   selectedSensor,
 }) => {
   const aqiLevels = [
@@ -19,19 +29,29 @@ const RightSidebar: React.FC<RightSidebarProps> = ({
     { range: '116+', label: 'Unhealthy', color: '#ff3333' },
   ];
 
-  const getVehicleCount = (type: string): number => {
-    return vehicles.filter(v => v.type === type).length;
+  const getVehicleCounts = (): VehicleCounts => {
+    if (selectedSensor?.vehicles) {
+      return selectedSensor.vehicles;
+    }
+
+    return sensorReadings.reduce((totals, reading) => {
+      VEHICLE_TYPES.forEach((type) => {
+        totals[type] += reading.vehicles?.[type] || 0;
+      });
+      return totals;
+    }, {
+      Car: 0,
+      Van: 0,
+      Jeepney: 0,
+      Truck: 0,
+      Tricycle: 0,
+      Motorcycle: 0,
+      Bus: 0,
+    });
   };
 
-  const vehicleTypes = [
-    { name: 'Tricycle', key: 'tricycle', icon: '🛺', color: '#ffa500' },
-    { name: 'Car', key: 'car', icon: '🚗', color: '#3b82f6' },
-    { name: 'Van', key: 'van', icon: '🚐', color: '#8b5cf6' },
-    { name: 'Motorcycle', key: 'motorcycle', icon: '🏍️', color: '#f59e0b' },
-    { name: 'Truck', key: 'truck', icon: '🚚', color: '#ef4444' },
-    { name: 'Jeepney', key: 'jeepney', icon: '🚐', color: '#06b6d4' },
-    { name: 'Bus', key: 'bus', icon: '🚌', color: '#8b5cf6' },
-  ];
+  const vehicleCounts = getVehicleCounts();
+  const totalVehicles = totalVehicleCount(vehicleCounts);
 
   const formatTimestamp = (timestamp: any): string => {
     if (timestamp && typeof timestamp.toDate === 'function') {
@@ -64,6 +84,10 @@ const RightSidebar: React.FC<RightSidebarProps> = ({
                 <span className="data-value">{selectedSensor.status.replace(/_/g, ' ')}</span>
               </div>
               <div className="data-row">
+                <span className="data-label">Vehicles:</span>
+                <span className="data-value">{totalVehicleCount(selectedSensor.vehicles)} detected</span>
+              </div>
+              <div className="data-row">
                 <span className="data-label">Updated:</span>
                 <span className="data-value">{formatTimestamp(selectedSensor.timestamp)}</span>
               </div>
@@ -93,13 +117,15 @@ const RightSidebar: React.FC<RightSidebarProps> = ({
         <h3 className="section-title">VEHICLE DETECTION</h3>
         <div className="vehicle-stats">
           <div className="vehicle-total">
-            <span className="total-label">Total Detected</span>
-            <span className="total-count">{vehicles.length}</span>
+            <span className="total-label">
+              {selectedSensor ? 'At Selected Location' : 'Total Detected'}
+            </span>
+            <span className="total-count">{totalVehicles}</span>
           </div>
 
           <div className="vehicle-breakdown">
-            {vehicleTypes.map((type) => {
-              const count = getVehicleCount(type.key);
+            {VEHICLE_DISPLAY.map((type) => {
+              const count = vehicleCounts[type.key] || 0;
               return (
                 <div key={type.key} className="vehicle-type-item">
                   <div className="vehicle-type-header">
@@ -110,7 +136,7 @@ const RightSidebar: React.FC<RightSidebarProps> = ({
                     <div
                       className="vehicle-progress-fill"
                       style={{
-                        width: `${vehicles.length > 0 ? (count / vehicles.length) * 100 : 0}%`,
+                        width: `${totalVehicles > 0 ? (count / totalVehicles) * 100 : 0}%`,
                         backgroundColor: type.color,
                       }}
                     ></div>
