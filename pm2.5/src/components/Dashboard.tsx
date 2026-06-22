@@ -1,11 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { SensorReading, Vehicle } from '../data/dummyData';
 import StatsHeader from './StatsHeader';
 import MapComponent from './Map';
 import LeftSidebar from './LeftSidebar';
 import RightSidebar from './RightSidebar';
-import { getRealtimeData, subscribeToRealtimeData } from '../utils/realtimeDatabaseHelpers';
+import { getRealtimeData } from '../utils/realtimeDatabaseHelpers';
 import './Dashboard.css';
+
+const STALE_DATA_MS = 5 * 60 * 1000; // 5 minutes
 
 const Dashboard: React.FC = () => {
   const [sensorReadings, setSensorReadings] = useState<SensorReading[]>([]);
@@ -13,67 +15,60 @@ const Dashboard: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [isLive, setIsLive] = useState(true);
   const [isPaused, setIsPaused] = useState(false);
+  const [isStale, setIsStale] = useState(false);
   const [selectedSensor, setSelectedSensor] = useState<SensorReading | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const mountedRef = useRef(true);
 
-  // Set up real-time data subscription
-  useEffect(() => {
-    if (isPaused) {
-      setLoading(false);
-      return;
-    }
+  const applyData = (data: { sensorReadings: SensorReading[]; vehicles: Vehicle[] }) => {
+    setSensorReadings(data.sensorReadings);
+    setVehicles(data.vehicles);
 
-    // Initial fetch
-    const initialFetch = async () => {
-      try {
-        const data = await getRealtimeData();
-        setSensorReadings(data.sensorReadings);
-        setVehicles(data.vehicles);
-        setError(null);
-        setIsLive(true);
-      } catch (err) {
-        console.error('Error fetching initial data:', err);
-        setError('Failed to connect to Firebase');
-        setIsLive(false);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    initialFetch();
-
-    // Subscribe to real-time updates
-    const unsubscribe = subscribeToRealtimeData((data) => {
-      setSensorReadings(data.sensorReadings);
-      setVehicles(data.vehicles);
-      setIsLive(true);
-      setError(null);
+    setSelectedSensor(prev => {
+      if (data.sensorReadings.length === 0) return null;
+      if (!prev) return data.sensorReadings[0];
+      const updated = data.sensorReadings.find(r => r.id === prev.id);
+      return updated ?? data.sensorReadings[0];
     });
 
+    if (data.sensorReadings.length > 0) {
+      const latest = data.sensorReadings.reduce((a, b) =>
+        a.timestamp > b.timestamp ? a : b
+      );
+      setIsStale(Date.now() - latest.timestamp.getTime() > STALE_DATA_MS);
+    } else {
+      setIsStale(true);
+    }
+
+    setError(null);
+    setIsLive(true);
+  };
+
+  // Single effect: initial fetch + polling interval.
+  // setState calls happen only in .then() callbacks, never synchronously in the effect body.
+  useEffect(() => {
+    if (isPaused) return;
+
+    mountedRef.current = true;
+
+    const refresh = () => {
+      getRealtimeData()
+        .then(data => { if (mountedRef.current) applyData(data); })
+        .catch(() => { if (mountedRef.current) { setError('Failed to connect to Firebase'); setIsLive(false); } })
+        .finally(() => { if (mountedRef.current) setLoading(false); });
+    };
+
+    refresh();
+    const interval = setInterval(refresh, 3000);
+
     return () => {
-      unsubscribe();
+      mountedRef.current = false;
+      clearInterval(interval);
     };
   }, [isPaused]);
 
-  // Auto-select first sensor when data loads
-  useEffect(() => {
-    if (sensorReadings.length > 0 && !selectedSensor) {
-      setSelectedSensor(sensorReadings[0]);
-    }
-  }, [sensorReadings, selectedSensor]);
-
-  // Keep selected sensor in sync with live updates
-  useEffect(() => {
-    if (!selectedSensor) return;
-
-    const updatedSensor = sensorReadings.find((reading) => reading.id === selectedSensor.id);
-    if (updatedSensor && updatedSensor !== selectedSensor) {
-      setSelectedSensor(updatedSensor);
-    }
-  }, [sensorReadings, selectedSensor]);
-
   const handleTogglePause = () => {
-    setIsPaused(!isPaused);
+    setIsPaused(prev => !prev);
   };
 
   const handleSelectSensor = (sensor: SensorReading) => {
@@ -115,6 +110,12 @@ const Dashboard: React.FC = () => {
 
   return (
     <div className="dashboard">
+      {isStale && (
+        <div className="stale-banner">
+          ⚠️ Data is stale — no recent readings from sensors. Last reading was over 5 minutes ago.
+        </div>
+      )}
+
       <StatsHeader
         sensorReadings={sensorReadings}
         activeNodes={sensorReadings.length}

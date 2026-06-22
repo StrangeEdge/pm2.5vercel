@@ -30,7 +30,7 @@ const MapFlyTo: React.FC<{ center: [number, number]; zoom: number }> = ({ center
 
   useEffect(() => {
     map.flyTo(center, zoom, { duration: 0.8 });
-  }, [map, center[0], center[1], zoom]);
+  }, [map, center, zoom]);
 
   return null;
 };
@@ -63,9 +63,9 @@ const MapComponent: React.FC<MapProps> = ({ sensorReadings, selectedSensor }) =>
     return parts.length > 0 ? parts.join(', ') : 'No vehicles detected';
   };
 
-  const formatTimestamp = (timestamp: any): string => {
+  const formatTimestamp = (timestamp: Date | { toDate: () => Date }): string => {
     // Handle Firestore Timestamp objects
-    if (timestamp && typeof timestamp.toDate === 'function') {
+    if (timestamp && 'toDate' in timestamp && typeof timestamp.toDate === 'function') {
       return timestamp.toDate().toLocaleTimeString();
     }
     // Handle JavaScript Date objects

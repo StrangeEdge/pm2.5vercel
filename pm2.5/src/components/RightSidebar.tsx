@@ -53,8 +53,8 @@ const RightSidebar: React.FC<RightSidebarProps> = ({
   const vehicleCounts = getVehicleCounts();
   const totalVehicles = totalVehicleCount(vehicleCounts);
 
-  const formatTimestamp = (timestamp: any): string => {
-    if (timestamp && typeof timestamp.toDate === 'function') {
+  const formatTimestamp = (timestamp: Date | { toDate: () => Date }): string => {
+    if (timestamp && 'toDate' in timestamp && typeof timestamp.toDate === 'function') {
       return timestamp.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
     if (timestamp instanceof Date) {

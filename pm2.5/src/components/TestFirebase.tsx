@@ -3,8 +3,10 @@ import { testFirebaseConnection } from '../utils/testFirebaseConnection';
 import { seedTestData } from '../utils/seedTestData';
 import './TestFirebase.css';
 
+import type { ConnectionTestResult } from '../utils/testFirebaseConnection';
+
 const TestFirebase: React.FC = () => {
-  const [testResult, setTestResult] = useState<any>(null);
+  const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
   const [seedResult, setSeedResult] = useState<string>('');
   const [loading, setLoading] = useState(false);
 
@@ -43,12 +45,9 @@ const TestFirebase: React.FC = () => {
               <h3>{testResult.connected ? '✅ Connected' : '❌ Connection Failed'}</h3>
               {testResult.connected ? (
                 <>
-                  <p>Firebase Firestore is connected!</p>
+                  <p>Firebase Realtime Database is connected!</p>
                   <p>
-                    <strong>Sensor Readings:</strong> {testResult.sensorReadingsCount} documents
-                  </p>
-                  <p>
-                    <strong>Vehicles:</strong> {testResult.vehiclesCount} documents
+                    <strong>Data Points:</strong> {testResult.dataPointsCount} in /pm25_data
                   </p>
                 </>
               ) : (
@@ -62,7 +61,7 @@ const TestFirebase: React.FC = () => {
           <h2>Step 2: Seed Test Data</h2>
           <p>Click below to add sample sensor readings and vehicle detections to Firebase.</p>
           <p style={{ fontSize: '12px', color: '#666' }}>
-            Note: If you get permission errors, update your Firestore security rules to allow writes.
+            Note: If you get permission errors, update your RTDB security rules to allow writes.
           </p>
           
           <button 
@@ -91,22 +90,22 @@ const TestFirebase: React.FC = () => {
           
           <ol>
             <li>Go to <a href="https://console.firebase.google.com" target="_blank" rel="noopener noreferrer">Firebase Console</a></li>
-            <li>Select your project → Firestore Database</li>
+            <li>Select your project → Realtime Database</li>
             <li>Check your security rules:
-              <pre>{`match /sensorReadings/{document=**} {
-  allow read: if true;
-  allow write: if true;  // Change from 'false' to 'true' temporarily
-}
-
-match /vehicles/{document=**} {
-  allow read: if true;
-  allow write: if true;  // Change from 'false' to 'true' temporarily
+              <pre>{`{
+  "rules": {
+    "pm25_data": {
+      ".read": true,
+      ".write": true,
+      ".indexOn": ["timestamp"]
+    }
+  }
 }`}</pre>
             </li>
             <li>Click "Publish" to update rules</li>
             <li>Try seeding again</li>
             <li>
-              <strong>Important:</strong> Change write rules back to `false` after testing for security!
+              <strong>Important:</strong> Restrict write rules after testing! See <code>RTDB_SECURITY.md</code> for production rules.
             </li>
           </ol>
         </div>

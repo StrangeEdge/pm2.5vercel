@@ -1,14 +1,33 @@
 /**
  * Firebase Realtime Database Helpers
- * Functions to fetch sensor readings and vehicle detections from RTDB
- * Uses REST API to avoid database URL configuration issues
+ * Fetches sensor readings and vehicle detections from RTDB via REST API.
+ * This is the primary data source for the dashboard.
  */
 
 import type { SensorReading, Vehicle, VehicleCounts } from '../data/dummyData';
 import { VEHICLE_TYPES, emptyVehicleCounts } from '../data/dummyData';
 
-// Firebase Realtime Database URL
-const RTDB_URL = 'https://pm25map-9f801-default-rtdb.asia-southeast1.firebasedatabase.app';
+// Firebase Realtime Database URL from environment variables
+const RTDB_URL = import.meta.env.VITE_RTDB_URL;
+
+interface RawSensorDatum {
+  latitude?: number | string;
+  longitude?: number | string;
+  pm25?: number | string;
+  pm2_5?: number | string;
+  value?: number | string;
+  timestamp?: string | number;
+  name?: string;
+  location_name?: string;
+  lat?: number | string;
+  lng?: number | string;
+  location?: {
+    lat?: number | string;
+    lng?: number | string;
+    name?: string;
+  };
+  vehicles?: Record<string, unknown>;
+}
 
 const parseVehicleCounts = (rawVehicles: Record<string, unknown> | undefined): VehicleCounts => {
   const vehicles = emptyVehicleCounts();
@@ -54,8 +73,6 @@ const vehicleCountsToList = (
  */
 export const getRealtimeData = async () => {
   try {
-    console.log('📡 Fetching from Realtime Database via REST API...');
-
     const response = await fetch(`${RTDB_URL}/pm25_data.json`);
 
     if (!response.ok) {
@@ -65,22 +82,20 @@ export const getRealtimeData = async () => {
     const rawData = await response.json();
 
     if (!rawData) {
-      console.log('No data in Realtime Database');
       return { sensorReadings: [], vehicles: [] };
     }
-
-    console.log('Raw data from RTDB:', rawData);
 
     const sensorReadings: SensorReading[] = [];
     const vehicles: Vehicle[] = [];
 
-    Object.entries(rawData).forEach(([key, value]: [string, any]) => {
-      if (value && typeof value === 'object') {
-        const latitude = Number(value.latitude ?? value.location?.lat ?? value.lat ?? 14.3534);
-        const longitude = Number(value.longitude ?? value.location?.lng ?? value.lng ?? 120.9895);
-        const pm25 = Number(value.pm25 ?? value.pm2_5 ?? value.value ?? 0) || 0;
-        const timestamp = value.timestamp ? new Date(value.timestamp) : new Date();
-        const vehicleCounts = parseVehicleCounts(value.vehicles);
+    Object.entries(rawData).forEach(([key, value]: [string, unknown]) => {
+      const datum = value as RawSensorDatum | null;
+      if (datum && typeof datum === 'object') {
+        const latitude = Number(datum.latitude ?? datum.location?.lat ?? datum.lat ?? 14.3534);
+        const longitude = Number(datum.longitude ?? datum.location?.lng ?? datum.lng ?? 120.9895);
+        const pm25 = Number(datum.pm25 ?? datum.pm2_5 ?? datum.value ?? 0) || 0;
+        const timestamp = datum.timestamp ? new Date(datum.timestamp) : new Date();
+        const vehicleCounts = parseVehicleCounts(datum.vehicles);
 
         const reading: SensorReading = {
           id: key,
@@ -88,7 +103,7 @@ export const getRealtimeData = async () => {
           location: {
             lat: latitude,
             lng: longitude,
-            name: value.location?.name || value.name || value.location_name || `Sensor ${key.slice(-6)}`,
+            name: datum.location?.name || datum.name || datum.location_name || `Sensor ${key.slice(-6)}`,
           },
           timestamp,
           status: getStatusFromPM25(pm25),
@@ -99,14 +114,11 @@ export const getRealtimeData = async () => {
         vehicles.push(
           ...vehicleCountsToList(vehicleCounts, key, reading.location, timestamp)
         );
-        console.log(
-          `✓ Added sensor reading: ${reading.location.name} - ${reading.pm25} μg/m³, vehicles: ${JSON.stringify(vehicleCounts)}`
-        );
       }
     });
 
     return {
-      sensorReadings,
+      sensorReadings: sensorReadings.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime()),
       vehicles,
     };
   } catch (error) {
@@ -116,29 +128,45 @@ export const getRealtimeData = async () => {
 };
 
 /**
- * Poll for real-time updates from RTDB
- * Note: REST API doesn't support true real-time like WebSockets, so we poll
+ * Subscribe to real-time updates from RTDB via polling.
+ * Returns an unsubscribe function.
  */
 export const subscribeToRealtimeData = (
   callback: (data: { sensorReadings: SensorReading[]; vehicles: Vehicle[] }) => void
 ) => {
-  try {
-    getRealtimeData().then(callback);
+  const pollInterval = setInterval(async () => {
+    const data = await getRealtimeData();
+    callback(data);
+  }, 3000);
 
-    const pollInterval = setInterval(async () => {
-      const data = await getRealtimeData();
-      callback(data);
-    }, 3000);
-
-    return () => clearInterval(pollInterval);
-  } catch (error) {
-    console.error('Error subscribing to Realtime Database:', error);
-    return () => {};
-  }
+  return () => clearInterval(pollInterval);
 };
 
 /**
- * Determine PM2.5 status based on value
+ * Push a sensor reading to RTDB (used for seeding test data)
+ */
+export const pushSensorReading = async (reading: {
+  latitude: number;
+  longitude: number;
+  pm25: number;
+  timestamp: string;
+  vehicles: Record<string, number>;
+}) => {
+  const response = await fetch(`${RTDB_URL}/pm25_data.json`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(reading),
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${response.text}`);
+  }
+
+  return response.json();
+};
+
+/**
+ * Determine PM2.5 status based on WHO/EPA guidelines
  */
 function getStatusFromPM25(pm25: number): 'good' | 'moderate' | 'unhealthy_for_sensitive' | 'unhealthy' {
   if (pm25 <= 35) return 'good';

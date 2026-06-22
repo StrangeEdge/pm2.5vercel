@@ -7,12 +7,10 @@ import './App.css'
 function App() {
   useEffect(() => {
     const initializeApp = async () => {
-      // Test Firebase connection
       const connectionTest = await testFirebaseConnection();
-      
-      // If no data in Firebase, seed test data
-      if (connectionTest.connected && connectionTest.sensorReadingsCount === 0) {
-        console.log('📭 No data in Firebase. Seeding test data...');
+
+      if (connectionTest.connected && (connectionTest.dataPointsCount ?? 0) === 0) {
+        console.log('📭 No data in RTDB. Seeding test data...');
         await seedTestData();
       }
     };
