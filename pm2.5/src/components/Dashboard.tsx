@@ -8,6 +8,7 @@ import { getRealtimeData } from '../utils/realtimeDatabaseHelpers';
 import './Dashboard.css';
 
 const STALE_DATA_MS = 5 * 60 * 1000; // 5 minutes
+export const SENSOR_OFFLINE_MS = STALE_DATA_MS; // reuse for per-sensor offline detection
 
 const Dashboard: React.FC = () => {
   const [sensorReadings, setSensorReadings] = useState<SensorReading[]>([]);
@@ -18,6 +19,7 @@ const Dashboard: React.FC = () => {
   const [isStale, setIsStale] = useState(false);
   const [selectedSensor, setSelectedSensor] = useState<SensorReading | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [offlineSensorIds, setOfflineSensorIds] = useState<Set<string>>(new Set());
   const mountedRef = useRef(true);
 
   const applyData = (data: { sensorReadings: SensorReading[]; vehicles: Vehicle[] }) => {
@@ -35,9 +37,19 @@ const Dashboard: React.FC = () => {
       const latest = data.sensorReadings.reduce((a, b) =>
         a.timestamp > b.timestamp ? a : b
       );
-      setIsStale(Date.now() - latest.timestamp.getTime() > STALE_DATA_MS);
+      const now = Date.now();
+      setIsStale(now - latest.timestamp.getTime() > STALE_DATA_MS);
+
+      const offline = new Set<string>();
+      data.sensorReadings.forEach(r => {
+        if (now - r.timestamp.getTime() > SENSOR_OFFLINE_MS) {
+          offline.add(r.id);
+        }
+      });
+      setOfflineSensorIds(offline);
     } else {
       setIsStale(true);
+      setOfflineSensorIds(new Set());
     }
 
     setError(null);
@@ -130,6 +142,7 @@ const Dashboard: React.FC = () => {
             sensorReadings={sensorReadings}
             selectedSensor={selectedSensor}
             onSelectSensor={handleSelectSensor}
+            offlineSensorIds={offlineSensorIds}
           />
         </div>
 
@@ -138,6 +151,7 @@ const Dashboard: React.FC = () => {
             <MapComponent
               sensorReadings={sensorReadings}
               selectedSensor={selectedSensor}
+              offlineSensorIds={offlineSensorIds}
             />
           ) : (
             <div className="no-data-map">

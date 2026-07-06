@@ -8,6 +8,7 @@ import './Map.css';
 interface MapProps {
   sensorReadings: SensorReading[];
   selectedSensor: SensorReading | null;
+  offlineSensorIds: Set<string>;
 }
 
 const getStatusColor = (status: SensorReading['status']): string => {
@@ -35,7 +36,7 @@ const MapFlyTo: React.FC<{ center: [number, number]; zoom: number }> = ({ center
   return null;
 };
 
-const MapComponent: React.FC<MapProps> = ({ sensorReadings, selectedSensor }) => {
+const MapComponent: React.FC<MapProps> = ({ sensorReadings, selectedSensor, offlineSensorIds }) => {
   const lasPinasCenter: [number, number] = [14.3534, 120.9895];
   const mapCenter: [number, number] = selectedSensor
     ? [selectedSensor.location.lat, selectedSensor.location.lng]
@@ -92,7 +93,8 @@ const MapComponent: React.FC<MapProps> = ({ sensorReadings, selectedSensor }) =>
         {/* Sensor Reading Markers */}
         {sortedReadings.map((reading) => {
           const isSelected = selectedSensor?.id === reading.id;
-          const markerColor = getStatusColor(reading.status);
+          const isOffline = offlineSensorIds.has(reading.id);
+          const markerColor = isOffline ? '#555' : getStatusColor(reading.status);
 
           return (
           <CircleMarker
@@ -100,7 +102,7 @@ const MapComponent: React.FC<MapProps> = ({ sensorReadings, selectedSensor }) =>
             center={[reading.location.lat, reading.location.lng]}
             radius={isSelected ? 18 : 12}
             fillColor={markerColor}
-            fillOpacity={isSelected ? 0.9 : 0.55}
+            fillOpacity={isOffline ? 0.25 : isSelected ? 0.9 : 0.55}
             weight={isSelected ? 3 : 2}
             color={isSelected ? '#1a1a2e' : markerColor}
           >
@@ -111,7 +113,7 @@ const MapComponent: React.FC<MapProps> = ({ sensorReadings, selectedSensor }) =>
                   <strong>PM2.5:</strong> {reading.pm25} μg/m³
                 </p>
                 <p>
-                  <strong>Status:</strong> {reading.status.replace('_', ' ')}
+                  <strong>Status:</strong> {isOffline ? 'OFFLINE' : reading.status.replace('_', ' ')}
                 </p>
                 <p>
                   <strong>Vehicles:</strong> {totalVehicleCount(reading.vehicles)}
@@ -120,6 +122,9 @@ const MapComponent: React.FC<MapProps> = ({ sensorReadings, selectedSensor }) =>
                 <p className="popup-time">
                   {formatTimestamp(reading.timestamp)}
                 </p>
+                {isOffline && (
+                  <p className="popup-offline">Sensor has not reported in over 5 minutes</p>
+                )}
               </div>
             </Popup>
           </CircleMarker>

@@ -5,12 +5,14 @@ interface LeftSidebarProps {
   sensorReadings: SensorReading[];
   selectedSensor: SensorReading | null;
   onSelectSensor: (sensor: SensorReading) => void;
+  offlineSensorIds: Set<string>;
 }
 
 const LeftSidebar: React.FC<LeftSidebarProps> = ({
   sensorReadings,
   selectedSensor,
   onSelectSensor,
+  offlineSensorIds,
 }) => {
   const formatTimestamp = (timestamp: unknown): string => {
     let date: Date | null = null;
@@ -66,34 +68,39 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
       <div className="sidebar-header">
         <span className="sidebar-title">FIELD UNITS</span>
         <span className="sidebar-divider">·</span>
-        <span className="field-count">{sensorReadings.length} ONLINE</span>
+        <span className="field-count">{sensorReadings.filter(r => !offlineSensorIds.has(r.id)).length} ONLINE</span>
       </div>
 
       <div className="sensor-list">
         {sensorReadings.map((reading) => {
           const statusColor = getStatusColor(reading.status);
+          const isOffline = offlineSensorIds.has(reading.id);
 
           return (
             <div
               key={reading.id}
-              className={`sensor-item ${selectedSensor?.id === reading.id ? 'selected' : ''}`}
+              className={`sensor-item ${selectedSensor?.id === reading.id ? 'selected' : ''} ${isOffline ? 'offline' : ''}`}
               onClick={() => onSelectSensor(reading)}
             >
               <div className="sensor-card-grid">
                 <h3 className="sensor-name">{reading.location.name}</h3>
-                <div className="pm25-value" style={{ color: statusColor }}>
+                <div className="pm25-value" style={{ color: isOffline ? '#555' : statusColor }}>
                   {Number(reading.pm25).toFixed(1)}
                 </div>
 
-                <div
-                  className="status-badge"
-                  style={{
-                    color: statusColor,
-                    borderColor: statusColor,
-                  }}
-                >
-                  {getStatusLabel(reading.status)}
-                </div>
+                {isOffline ? (
+                  <div className="offline-badge">OFFLINE</div>
+                ) : (
+                  <div
+                    className="status-badge"
+                    style={{
+                      color: statusColor,
+                      borderColor: statusColor,
+                    }}
+                  >
+                    {getStatusLabel(reading.status)}
+                  </div>
+                )}
                 <span className="pm25-unit">µg/m³</span>
 
                 <span className="sensor-time">{formatTimestamp(reading.timestamp)}</span>

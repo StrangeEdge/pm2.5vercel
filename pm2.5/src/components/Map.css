@@ -103,3 +103,9 @@
   border-top: 1px solid rgba(0, 217, 255, 0.1);
   padding-top: 8px;
 }
+
+.popup-offline {
+  color: #ff3333;
+  font-weight: 600;
+  margin-top: 6px;
+}
