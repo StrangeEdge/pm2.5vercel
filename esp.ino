@@ -33,9 +33,10 @@ const long  GMT_OFFSET   = 8 * 3600;   // +8 hours
 const int   DST_OFFSET   = 0;          // Philippines has no DST
 
 // ── Firebase RTDB ────────────────────────────────────────────
-const char*  RTDB_HOST   = "pm25map-9f801-default-rtdb.asia-southeast1.firebasedatabase.app";
-const char*  RTDB_PATH   = "/pm25_data/esp32-sensor-01.json";  // fixed key = single sensor
-const int    HTTPS_PORT  = 443;
+const char*  RTDB_HOST    = "pm25map-9f801-default-rtdb.asia-southeast1.firebasedatabase.app";
+const char*  RTDB_PATH    = "/pm25_data/esp32-sensor-01.json";   // live state (PATCH)
+const char*  HIST_PATH    = "/pm25_history/esp32-sensor-01.json"; // time series (POST)
+const int    HTTPS_PORT   = 443;
 
 // ── Sensor location (fixed) ───────────────────────────────────
 const double SENSOR_LAT = 14.448133836842521;
@@ -72,17 +73,31 @@ struct PmsData {
 
 PmsData latest = {0, false};
 
+// Running average (circular buffer, 10 samples)
+#define AVG_WINDOW 10
+uint16_t readings[AVG_WINDOW] = {0};
+uint8_t  readingIdx    = 0;
+uint8_t  readingCount  = 0;
+uint16_t smoothedPm25  = 0;
+
+// Sensor health — if no valid frame in 10 s, sensor is dead
+unsigned long lastValidFrame = 0;
+const unsigned long SENSOR_TIMEOUT_MS = 10000;
+
 unsigned long lastRead      = 0;
 unsigned long lastDisplay   = 0;
 unsigned long lastSend      = 0;
 unsigned long lastSyncCheck = 0;
 bool wifiWasDisconnected    = false;
 
+// Warmup — discard first 30 s of readings
+const unsigned long WARMUP_MS = 30000;
+
 const unsigned long READ_INTERVAL    = 1000;
 const unsigned long DISPLAY_INTERVAL = 1000;
 
 // ─────────────────────────────────────────────────────────────
-//  Parse one PMS5003 frame (32 bytes)
+//  Parse one PMS5003 frame (32 bytes, validated against spec)
 // ─────────────────────────────────────────────────────────────
 bool readPms(PmsData &out) {
   if (pmsSerial.available() < 32) return false;
@@ -92,28 +107,50 @@ bool readPms(PmsData &out) {
 
     uint8_t buf[32];
     if (pmsSerial.readBytes(buf, 32) != 32) return false;
-    if (buf[1] != 0x4D) return false;
 
+    // Start bytes
+    if (buf[0] != 0x42 || buf[1] != 0x4D) continue;
+
+    // Frame length: bytes 2-3 must equal 0x001C (28 data bytes after header)
+    uint16_t frameLen = (buf[2] << 8) | buf[3];
+    if (frameLen != 0x001C) continue;
+
+    // Checksum: sum of first 30 bytes must match bytes 30-31
     uint16_t sum = 0;
     for (int i = 0; i < 30; i++) sum += buf[i];
-    if (sum != ((buf[30] << 8) | buf[31])) return false;
+    if (sum != ((buf[30] << 8) | buf[31])) continue;
 
     out.pm2_5_atm = (buf[12] << 8) | buf[13];
     out.valid = true;
+    lastValidFrame = millis();
     return true;
   }
   return false;
 }
 
 // ─────────────────────────────────────────────────────────────
-//  AQI label for PM2.5 (US EPA breakpoints)
+//  AQI label for PM2.5 (US EPA breakpoints, 24-hr avg)
 // ─────────────────────────────────────────────────────────────
 const char* aqiLabel(uint16_t pm25) {
   if (pm25 <=  12) return "GOOD";
   if (pm25 <=  35) return "MODERATE";
-  if (pm25 <=  55) return "UNHEALTHY*";
-  if (pm25 <= 150) return "VERY UNHLTHY";
+  if (pm25 <=  55) return "UNHLTH SENS";
+  if (pm25 <= 150) return "UNHEALTHY";
+  if (pm25 <= 250) return "VERY UNHLTHY";
   return "HAZARDOUS";
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Rolling average — smooths PMS5003 noise (±15-20% per sample)
+// ─────────────────────────────────────────────────────────────
+uint16_t addToAverage(uint16_t raw) {
+  readings[readingIdx] = raw;
+  readingIdx = (readingIdx + 1) % AVG_WINDOW;
+  if (readingCount < AVG_WINDOW) readingCount++;
+
+  uint32_t total = 0;
+  for (uint8_t i = 0; i < readingCount; i++) total += readings[i];
+  return (uint16_t)(total / readingCount);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -159,8 +196,38 @@ void updateDisplay() {
 
   display.drawLine(0, 10, 127, 10, SSD1306_WHITE);
 
+  // ── Check for sensor fault ──
+  if (millis() - lastValidFrame > SENSOR_TIMEOUT_MS) {
+    display.setTextSize(1);
+    display.setCursor(10, 28);
+    display.print("SENSOR FAULT");
+    display.setCursor(10, 42);
+    display.print("Check wiring");
+    display.drawLine(0, 54, 127, 54, SSD1306_WHITE);
+  }
+  // ── Warmup countdown ──
+  else if (millis() < WARMUP_MS) {
+    unsigned long remaining = (WARMUP_MS - millis()) / 1000 + 1;
+    display.setTextSize(1);
+    display.setCursor(18, 22);
+    display.print("Sensor warmup");
+    display.setTextSize(2);
+    char countBuf[6];
+    snprintf(countBuf, sizeof(countBuf), "%lu", remaining);
+    int16_t bx, by; uint16_t bw, bh;
+    display.getTextBounds(countBuf, 0, 0, &bx, &by, &bw, &bh);
+    display.setCursor(56 - bw, 36);
+    display.print(countBuf);
+    display.setTextSize(1);
+    display.setCursor(56, 36);
+    if (remaining == 1)
+      display.print(" second");
+    else
+      display.print(" seconds");
+    display.drawLine(0, 54, 127, 54, SSD1306_WHITE);
+  }
   // ── PM2.5 value (large, centred) ──
-  if (!latest.valid) {
+  else if (!latest.valid) {
     display.setTextSize(1);
     display.setCursor(10, 30);
     display.print("Waiting for sensor...");
@@ -170,9 +237,9 @@ void updateDisplay() {
     display.setCursor(0, 14);
     display.print("PM2.5  ug/m3");
 
-    // Big number
+    // Big number — use smoothed value
     char valBuf[8];
-    snprintf(valBuf, sizeof(valBuf), "%u", latest.pm2_5_atm);
+    snprintf(valBuf, sizeof(valBuf), "%u", smoothedPm25);
     display.setTextSize(3);
     // Right-align the number in the left ~70 px
     int16_t bx, by; uint16_t bw, bh;
@@ -183,7 +250,7 @@ void updateDisplay() {
     // AQI label (right side, small)
     display.setTextSize(1);
     display.setCursor(70, 32);
-    display.print(aqiLabel(latest.pm2_5_atm));
+    display.print(aqiLabel(smoothedPm25));
 
     // Separator
     display.drawLine(0, 54, 127, 54, SSD1306_WHITE);
@@ -240,36 +307,28 @@ unsigned long isoToEpoch(const char* iso) {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  PUT one reading to Firebase Realtime Database (fixed key)
+//  PATCH sensor reading to Firebase (merges — won't clobber
+//  vehicle counts written by the Raspberry Pi)
 // ─────────────────────────────────────────────────────────────
 bool sendToFirebase(uint16_t pm25, const char* timestamp) {
   WiFiClientSecure client;
   client.setInsecure();  // skip cert validation (ESP32 memory constrained)
 
   if (!client.connect(RTDB_HOST, HTTPS_PORT)) {
-    Serial.println("[PUT] Connection failed");
+    Serial.println("[PATCH] Connection failed");
     return false;
   }
 
-  StaticJsonDocument<256> doc;
+  StaticJsonDocument<192> doc;
   doc["latitude"]  = SENSOR_LAT;
   doc["longitude"] = SENSOR_LNG;
   doc["pm25"]      = pm25;
   doc["timestamp"] = timestamp;
 
-  JsonObject vehicles = doc.createNestedObject("vehicles");
-  vehicles["Car"]        = 0;
-  vehicles["Van"]        = 0;
-  vehicles["Jeepney"]    = 0;
-  vehicles["Truck"]      = 0;
-  vehicles["Tricycle"]   = 0;
-  vehicles["Motorcycle"] = 0;
-  vehicles["Bus"]        = 0;
-
   String body;
   serializeJson(doc, body);
 
-  String req = String("PUT ") + RTDB_PATH + " HTTP/1.1\r\n" +
+  String req = String("PATCH ") + RTDB_PATH + " HTTP/1.1\r\n" +
                "Host: " + RTDB_HOST + "\r\n" +
                "Content-Type: application/json\r\n" +
                "Content-Length: " + body.length() + "\r\n" +
@@ -278,7 +337,6 @@ bool sendToFirebase(uint16_t pm25, const char* timestamp) {
 
   client.print(req);
 
-  // Read response — just need the status line
   unsigned long timeout = millis() + 5000;
   while (!client.available() && millis() < timeout) delay(10);
 
@@ -286,10 +344,31 @@ bool sendToFirebase(uint16_t pm25, const char* timestamp) {
   client.stop();
 
   bool ok = statusLine.indexOf("200") > 0;
-  if (ok)
-    Serial.printf("[PUT] PM2.5=%u -> 200 OK\n", pm25);
-  else
-    Serial.printf("[PUT] PM2.5=%u -> FAIL (%s)\n", pm25, statusLine.c_str());
+  Serial.printf("[PATCH] PM2.5=%u -> %s\n", pm25, ok ? "200 OK" : statusLine.c_str());
+
+  // Also POST to history path for time-series (best-effort, return
+  // success based on the live PATCH since dashboard needs current state)
+  if (WiFiClientSecure histClient; histClient.setInsecure(),
+      histClient.connect(RTDB_HOST, HTTPS_PORT)) {
+
+    String histBody = String("{\"pm25\":") + pm25 + ",\"timestamp\":\"" + timestamp + "\"}";
+
+    String histReq = String("POST ") + HIST_PATH + " HTTP/1.1\r\n" +
+                     "Host: " + RTDB_HOST + "\r\n" +
+                     "Content-Type: application/json\r\n" +
+                     "Content-Length: " + histBody.length() + "\r\n" +
+                     "Connection: close\r\n\r\n" +
+                     histBody;
+
+    histClient.print(histReq);
+
+    unsigned long hTimeout = millis() + 3000;
+    while (!histClient.available() && millis() < hTimeout) delay(5);
+    bool histOk = histClient.readStringUntil('\n').indexOf("200") > 0;
+    histClient.stop();
+
+    if (!histOk) Serial.println("[HIST] POST failed (history may be incomplete)");
+  }
 
   return ok;
 }
@@ -458,10 +537,26 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
+  // ── Read sensor every 1 s ──
   if (now - lastRead >= READ_INTERVAL) {
     lastRead = now;
-    if (readPms(latest)) {
-      Serial.printf("[%lu s] PM2.5=%u ug/m3\n", now / 1000, latest.pm2_5_atm);
+    PmsData raw;
+    if (readPms(raw)) {
+      // Warmup: discard first 30 s of readings (laser + fan stabilize)
+      if (now < WARMUP_MS) {
+        Serial.printf("[WARMUP] %lu s remaining — raw=%u discarded\n",
+                      (WARMUP_MS - now) / 1000, raw.pm2_5_atm);
+      } else {
+        smoothedPm25 = addToAverage(raw.pm2_5_atm);
+        latest = raw;
+        Serial.printf("[%lu s] raw=%u  avg=%u ug/m3\n",
+                      now / 1000, raw.pm2_5_atm, smoothedPm25);
+      }
+    }
+
+    // Check sensor timeout — if no valid frame in SENSOR_TIMEOUT_MS, mark stale
+    if (now - lastValidFrame > SENSOR_TIMEOUT_MS) {
+      latest.valid = false;
     }
   }
 
@@ -470,15 +565,15 @@ void loop() {
     updateDisplay();
   }
 
-  // Send to Firebase every SEND_INTERVAL
+  // Send to Firebase every SEND_INTERVAL — use smoothed value
   if (now - lastSend >= SEND_INTERVAL && latest.valid) {
     lastSend = now;
     String ts = getISOTimestamp();
     if (ts.length() == 0) {
-      Serial.println("[PUT] No NTP time yet, skipping");
-    } else if (!sendToFirebase(latest.pm2_5_atm, ts.c_str())) {
-      saveLocally(latest.pm2_5_atm, ts.c_str());
-      Serial.println("[PUT] Offline — saved to backlog");
+      Serial.println("[PATCH] No NTP time yet, skipping");
+    } else if (!sendToFirebase(smoothedPm25, ts.c_str())) {
+      saveLocally(smoothedPm25, ts.c_str());
+      Serial.println("[PATCH] Offline — saved to backlog");
     }
   }
 

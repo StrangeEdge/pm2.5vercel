@@ -1,0 +1,54 @@
+The core issue
+Your ESP32 does this every 5 seconds:
+cppStaticJsonDocument<256> doc;
+doc["pm25"]      = pm25;
+doc["timestamp"] = timestamp;
+JsonObject vehicles = doc.createNestedObject("vehicles");
+vehicles["Car"] = 0; vehicles["Van"] = 0; ... // all zeroed
+
+String req = String("PUT ") + RTDB_PATH + ...
+PUT in Firebase RTDB replaces the entire node at that path. So the sequence is:
+
+Raspberry Pi writes vehicle counts to esp32-sensor-01
+ESP32's next 5-second cycle fires and PUTs the whole node again, with vehicles hardcoded back to all zeros
+Your Pi's counts are gone until it writes again, at which point the ESP32 clobbers them again 5 seconds later
+
+Since both devices are racing to overwrite the same node, whichever one reads Firebase for correlation will see a essentially-random mix of "real vehicle count, zeroed vehicle count" depending on exact timing — which will quietly corrupt the correlation dataset your whole thesis result depends on, without ever throwing an error. This is the kind of bug that's invisible until you're deep into analysis wondering why correlation is weak.
+Fix: PATCH instead of PUT, and stop touching vehicles at all
+The ESP32 should only ever touch pm25 and timestamp; it has no business writing to vehicles. Use Firebase's PATCH method, which merges fields instead of replacing the node:
+cppbool sendToFirebase(uint16_t pm25, const char* timestamp) {
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  if (!client.connect(RTDB_HOST, HTTPS_PORT)) {
+    Serial.println("[PATCH] Connection failed");
+    return false;
+  }
+
+  StaticJsonDocument<128> doc;
+  doc["pm25"]      = pm25;
+  doc["timestamp"] = timestamp;
+
+  String body;
+  serializeJson(doc, body);
+
+  String req = String("PATCH ") + RTDB_PATH + " HTTP/1.1\r\n" +
+               "Host: " + RTDB_HOST + "\r\n" +
+               "Content-Type: application/json\r\n" +
+               "Content-Length: " + body.length() + "\r\n" +
+               "Connection: close\r\n\r\n" +
+               body;
+
+  client.print(req);
+
+  unsigned long timeout = millis() + 5000;
+  while (!client.available() && millis() < timeout) delay(10);
+
+  String statusLine = client.readStringUntil('\n');
+  client.stop();
+
+  bool ok = statusLine.indexOf("200") > 0;
+  Serial.printf("[PATCH] PM2.5=%u -> %s\n", pm25, ok ? "200 OK" : statusLine.c_str());
+  return ok;
+}
+Same change applies to syncBacklog()'s call — it calls the same sendToFirebase(), so no extra change needed there, just make sure the Pi side is also using PATCH (or per-field PUT to a sub-path like /pm25_data/esp32-sensor-01/vehicles.json) rather than overwriting the whole node too. If your Pi code also does a full-node PUT, you have the same race in reverse and need the same fix on that end.

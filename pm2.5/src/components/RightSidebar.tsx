@@ -1,10 +1,9 @@
-import type { SensorReading, Vehicle, VehicleCounts } from '../data/dummyData';
+import type { SensorReading, VehicleCounts } from '../data/dummyData';
 import { VEHICLE_TYPES, totalVehicleCount } from '../data/dummyData';
 import './RightSidebar.css';
 
 interface RightSidebarProps {
   sensorReadings: SensorReading[];
-  vehicles: Vehicle[];
   selectedSensor: SensorReading | null;
 }
 

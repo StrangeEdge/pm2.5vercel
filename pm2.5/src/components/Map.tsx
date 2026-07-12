@@ -98,7 +98,7 @@ const MapComponent: React.FC<MapProps> = ({ sensorReadings, selectedSensor, offl
 
           return (
           <CircleMarker
-            key={`${reading.id}-${reading.pm25}-${reading.status}`}
+            key={reading.id}
             center={[reading.location.lat, reading.location.lng]}
             radius={isSelected ? 18 : 12}
             fillColor={markerColor}

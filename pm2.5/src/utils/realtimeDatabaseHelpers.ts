@@ -4,7 +4,7 @@
  * This is the primary data source for the dashboard.
  */
 
-import type { SensorReading, Vehicle, VehicleCounts } from '../data/dummyData';
+import type { SensorReading, VehicleCounts } from '../data/dummyData';
 import { VEHICLE_TYPES, emptyVehicleCounts } from '../data/dummyData';
 
 // Firebase Realtime Database URL from environment variables
@@ -29,6 +29,11 @@ interface RawSensorDatum {
   vehicles?: Record<string, unknown>;
 }
 
+const safeNumber = (value: unknown, fallback: number): number => {
+  const n = Number(value);
+  return isNaN(n) ? fallback : n;
+};
+
 const parseVehicleCounts = (rawVehicles: Record<string, unknown> | undefined): VehicleCounts => {
   const vehicles = emptyVehicleCounts();
 
@@ -38,7 +43,7 @@ const parseVehicleCounts = (rawVehicles: Record<string, unknown> | undefined): V
 
   VEHICLE_TYPES.forEach((type) => {
     const value = rawVehicles[type];
-    vehicles[type] = typeof value === 'number' ? value : Number(value) || 0;
+    vehicles[type] = typeof value === 'number' && !isNaN(value) ? value : 0;
   });
 
   return vehicles;
@@ -82,64 +87,44 @@ export const getRealtimeData = async () => {
     const rawData = await response.json();
 
     if (!rawData) {
-      return { sensorReadings: [], vehicles: [] };
+      return { sensorReadings: [] };
     }
 
     const sensorReadings: SensorReading[] = [];
-    const vehicles: Vehicle[] = [];
 
     Object.entries(rawData).forEach(([key, value]: [string, unknown]) => {
       const datum = value as RawSensorDatum | null;
-      if (datum && typeof datum === 'object') {
-        const latitude = Number(datum.latitude ?? datum.location?.lat ?? datum.lat ?? 14.3534);
-        const longitude = Number(datum.longitude ?? datum.location?.lng ?? datum.lng ?? 120.9895);
-        const pm25 = Number(datum.pm25 ?? datum.pm2_5 ?? datum.value ?? 0) || 0;
-        const timestamp = datum.timestamp ? new Date(datum.timestamp) : new Date();
-        const vehicleCounts = parseVehicleCounts(datum.vehicles);
+      if (!datum || typeof datum !== 'object') return;
 
-        const reading: SensorReading = {
-          id: key,
-          pm25,
-          location: {
-            lat: latitude,
-            lng: longitude,
-            name: datum.location?.name || datum.name || datum.location_name || `Sensor ${key.slice(-6)}`,
-          },
-          timestamp,
-          status: getStatusFromPM25(pm25),
-          vehicles: vehicleCounts,
-        };
+      const latitude  = safeNumber(datum.latitude ?? datum.location?.lat ?? datum.lat, 14.3534);
+      const longitude = safeNumber(datum.longitude ?? datum.location?.lng ?? datum.lng, 120.9895);
+      const pm25      = safeNumber(datum.pm25 ?? datum.pm2_5 ?? datum.value, 0);
+      const timestamp = datum.timestamp ? new Date(datum.timestamp) : new Date();
+      const vehicleCounts = parseVehicleCounts(datum.vehicles);
 
-        sensorReadings.push(reading);
-        vehicles.push(
-          ...vehicleCountsToList(vehicleCounts, key, reading.location, timestamp)
-        );
-      }
+      const reading: SensorReading = {
+        id: key,
+        pm25,
+        location: {
+          lat: latitude,
+          lng: longitude,
+          name: datum.location?.name || datum.name || datum.location_name || `Sensor ${key.slice(-6)}`,
+        },
+        timestamp,
+        status: getStatusFromPM25(pm25),
+        vehicles: vehicleCounts,
+      };
+
+      sensorReadings.push(reading);
     });
 
     return {
       sensorReadings: sensorReadings.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime()),
-      vehicles,
     };
   } catch (error) {
     console.error('Error fetching from Realtime Database:', error);
-    return { sensorReadings: [], vehicles: [] };
+    return { sensorReadings: [] };
   }
-};
-
-/**
- * Subscribe to real-time updates from RTDB via polling.
- * Returns an unsubscribe function.
- */
-export const subscribeToRealtimeData = (
-  callback: (data: { sensorReadings: SensorReading[]; vehicles: Vehicle[] }) => void
-) => {
-  const pollInterval = setInterval(async () => {
-    const data = await getRealtimeData();
-    callback(data);
-  }, 3000);
-
-  return () => clearInterval(pollInterval);
 };
 
 /**
@@ -159,7 +144,7 @@ export const pushSensorReading = async (reading: {
   });
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.text}`);
+    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
   }
 
   return response.json();
