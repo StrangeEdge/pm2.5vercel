@@ -1,4 +1,5 @@
 import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
@@ -17,6 +18,17 @@ const app = initializeApp(firebaseConfig);
 
 // Initialize Firestore (used by backend reference code, not by dashboard)
 export const db = getFirestore(app);
+
+// Initialize Auth and sign in anonymously for RTDB access
+const auth = getAuth(app);
+let cachedToken: string | null = null;
+
+export const getAuthToken = async (): Promise<string> => {
+  if (cachedToken) return cachedToken;
+  const cred = await signInAnonymously(auth);
+  cachedToken = await cred.user.getIdToken();
+  return cachedToken;
+};
 
 // Initialize Storage
 export const storage = getStorage(app);

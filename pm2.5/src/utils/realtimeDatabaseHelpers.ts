@@ -6,6 +6,7 @@
 
 import type { SensorReading, VehicleCounts } from '../data/dummyData';
 import { VEHICLE_TYPES, emptyVehicleCounts } from '../data/dummyData';
+import { getAuthToken } from '../config/firebaseConfig';
 
 // Firebase Realtime Database URL from environment variables
 const RTDB_URL = import.meta.env.VITE_RTDB_URL;
@@ -34,7 +35,9 @@ const safeNumber = (value: unknown, fallback: number): number => {
   return isNaN(n) ? fallback : n;
 };
 
-const parseVehicleCounts = (rawVehicles: Record<string, unknown> | undefined): VehicleCounts => {
+const parseVehicleCounts = (
+  rawVehicles: Record<string, unknown> | undefined,
+): VehicleCounts => {
   const vehicles = emptyVehicleCounts();
 
   if (!rawVehicles || typeof rawVehicles !== 'object') {
@@ -53,7 +56,7 @@ const vehicleCountsToList = (
   vehicles: VehicleCounts,
   readingId: string,
   location: { lat: number; lng: number },
-  detectedAt: Date
+  detectedAt: Date,
 ): Vehicle[] => {
   const detections: Vehicle[] = [];
 
@@ -78,7 +81,8 @@ const vehicleCountsToList = (
  */
 export const getRealtimeData = async () => {
   try {
-    const response = await fetch(`${RTDB_URL}/pm25_data.json`);
+    const token = await getAuthToken();
+    const response = await fetch(`${RTDB_URL}/pm25_data.json?auth=${token}`);
 
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
@@ -96,10 +100,18 @@ export const getRealtimeData = async () => {
       const datum = value as RawSensorDatum | null;
       if (!datum || typeof datum !== 'object') return;
 
-      const latitude  = safeNumber(datum.latitude ?? datum.location?.lat ?? datum.lat, 14.3534);
-      const longitude = safeNumber(datum.longitude ?? datum.location?.lng ?? datum.lng, 120.9895);
-      const pm25      = safeNumber(datum.pm25 ?? datum.pm2_5 ?? datum.value, 0);
-      const timestamp = datum.timestamp ? new Date(datum.timestamp) : new Date();
+      const latitude = safeNumber(
+        datum.latitude ?? datum.location?.lat ?? datum.lat,
+        14.3534,
+      );
+      const longitude = safeNumber(
+        datum.longitude ?? datum.location?.lng ?? datum.lng,
+        120.9895,
+      );
+      const pm25 = safeNumber(datum.pm25 ?? datum.pm2_5 ?? datum.value, 0);
+      const timestamp = datum.timestamp
+        ? new Date(datum.timestamp)
+        : new Date();
       const vehicleCounts = parseVehicleCounts(datum.vehicles);
 
       const reading: SensorReading = {
@@ -108,7 +120,11 @@ export const getRealtimeData = async () => {
         location: {
           lat: latitude,
           lng: longitude,
-          name: datum.location?.name || datum.name || datum.location_name || `Sensor ${key.slice(-6)}`,
+          name:
+            datum.location?.name ||
+            datum.name ||
+            datum.location_name ||
+            `Sensor ${key.slice(-6)}`,
         },
         timestamp,
         status: getStatusFromPM25(pm25),
@@ -119,7 +135,9 @@ export const getRealtimeData = async () => {
     });
 
     return {
-      sensorReadings: sensorReadings.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime()),
+      sensorReadings: sensorReadings.sort(
+        (a, b) => b.timestamp.getTime() - a.timestamp.getTime(),
+      ),
     };
   } catch (error) {
     console.error('Error fetching from Realtime Database:', error);
@@ -137,7 +155,8 @@ export const pushSensorReading = async (reading: {
   timestamp: string;
   vehicles: Record<string, number>;
 }) => {
-  const response = await fetch(`${RTDB_URL}/pm25_data.json`, {
+  const token = await getAuthToken();
+  const response = await fetch(`${RTDB_URL}/pm25_data.json?auth=${token}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(reading),
@@ -153,7 +172,9 @@ export const pushSensorReading = async (reading: {
 /**
  * Determine PM2.5 status based on WHO/EPA guidelines
  */
-function getStatusFromPM25(pm25: number): 'good' | 'moderate' | 'unhealthy_for_sensitive' | 'unhealthy' {
+function getStatusFromPM25(
+  pm25: number,
+): 'good' | 'moderate' | 'unhealthy_for_sensitive' | 'unhealthy' {
   if (pm25 <= 35) return 'good';
   if (pm25 <= 75) return 'moderate';
   if (pm25 <= 115) return 'unhealthy_for_sensitive';
