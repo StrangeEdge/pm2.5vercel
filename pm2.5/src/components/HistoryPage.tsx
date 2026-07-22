@@ -8,8 +8,6 @@ import {
   Tooltip,
   ResponsiveContainer,
   ReferenceLine,
-  BarChart,
-  Bar,
   Legend,
 } from 'recharts';
 import './HistoryPage.css';
@@ -19,10 +17,19 @@ const RTDB_URL = import.meta.env.VITE_RTDB_URL;
 
 type HistoryPoint = { timestamp: Date; pm25: number };
 
+type VehicleHistoryPoint = {
+  timestamp: Date;
+  Car: number;
+  Jeep: number;
+  Truck: number;
+  Tricycle: number;
+  Motorcycle: number;
+  Bus: number;
+};
+
 interface VehicleCounts {
   Car: number;
-  Van: number;
-  Jeepney: number;
+  Jeep: number;
   Truck: number;
   Tricycle: number;
   Motorcycle: number;
@@ -41,19 +48,29 @@ const TIME_WINDOWS = [
 
 const EMPTY_VEHICLES: VehicleCounts = {
   Car: 0,
-  Van: 0,
-  Jeepney: 0,
+  Jeep: 0,
   Truck: 0,
   Tricycle: 0,
   Motorcycle: 0,
   Bus: 0,
 };
 
+const VEHICLE_COLORS: Record<string, string> = {
+  Car: '#3b82f6',
+  Jeep: '#06b6d4',
+  Truck: '#ef4444',
+  Tricycle: '#ffa500',
+  Motorcycle: '#f59e0b',
+  Bus: '#8b5cf6',
+};
+
 export default function HistoryPage() {
   const [windowIdx, setWindowIdx] = useState(1); // default 30m
   const [points, setPoints] = useState<HistoryPoint[]>([]);
   const [vehicles, setVehicles] = useState<VehicleCounts>(EMPTY_VEHICLES);
+  const [vehicleHistory, setVehicleHistory] = useState<VehicleHistoryPoint[]>([]);
   const [loading, setLoading] = useState(true);
+  const [vLoading, setVLoading] = useState(true);
 
   const window = TIME_WINDOWS[windowIdx];
 
@@ -108,8 +125,7 @@ export default function HistoryPage() {
       if (raw && typeof raw === 'object') {
         setVehicles({
           Car: Number(raw.Car) || 0,
-          Van: Number(raw.Van) || 0,
-          Jeepney: Number(raw.Jeepney) || 0,
+          Jeep: Number(raw.Jeep) || 0,
           Truck: Number(raw.Truck) || 0,
           Tricycle: Number(raw.Tricycle) || 0,
           Motorcycle: Number(raw.Motorcycle) || 0,
@@ -121,10 +137,80 @@ export default function HistoryPage() {
     }
   }, []);
 
+  const fetchVehicleHistory = useCallback(async (ms: number) => {
+    setVLoading(true);
+    try {
+      const token = await getAuthToken();
+      const parsed: VehicleHistoryPoint[] = [];
+      const now = Date.now();
+      const cutoff = now - ms;
+
+      // 1. Fetch time series from /vehicle_history
+      const vHistUrl = `${RTDB_URL}/vehicle_history/esp32-sensor-01.json?auth=${token}`;
+      const vHistResp = await fetch(vHistUrl);
+      if (vHistResp.ok) {
+        const raw = await vHistResp.json();
+        if (raw && typeof raw === 'object') {
+          for (const key of Object.keys(raw)) {
+            const d = raw[key];
+            if (!d || typeof d !== 'object') continue;
+            const ts = d.timestamp ?? d.vehicles_timestamp;
+            const v = d.vehicles;
+            if (typeof ts !== 'string' || !v || typeof v !== 'object') continue;
+            const t = new Date(ts).getTime();
+            if (isNaN(t) || t < cutoff) continue;
+            parsed.push({
+              timestamp: new Date(ts),
+              Car: Number(v.Car) || 0,
+              Jeep: Number(v.Jeep) || 0,
+              Truck: Number(v.Truck) || 0,
+              Tricycle: Number(v.Tricycle) || 0,
+              Motorcycle: Number(v.Motorcycle) || 0,
+              Bus: Number(v.Bus) || 0,
+            });
+          }
+        }
+      }
+
+      // 2. Also include the current snapshot from /pm25_data
+      const snapUrl = `${RTDB_URL}/pm25_data/esp32-sensor-01.json?auth=${token}`;
+      const snapResp = await fetch(snapUrl);
+      if (snapResp.ok) {
+        const snap = await snapResp.json();
+        if (snap && typeof snap === 'object') {
+          const ts = snap.vehicles_timestamp;
+          const v = snap.vehicles;
+          if (typeof ts === 'string' && v && typeof v === 'object') {
+            const t = new Date(ts).getTime();
+            if (!isNaN(t) && t >= cutoff) {
+              parsed.push({
+                timestamp: new Date(ts),
+                Car: Number(v.Car) || 0,
+                Jeep: Number(v.Jeep) || 0,
+                Truck: Number(v.Truck) || 0,
+                Tricycle: Number(v.Tricycle) || 0,
+                Motorcycle: Number(v.Motorcycle) || 0,
+                Bus: Number(v.Bus) || 0,
+              });
+            }
+          }
+        }
+      }
+
+      parsed.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+      setVehicleHistory(parsed);
+    } catch (err) {
+      console.error('[fetchVehicleHistory] failed:', err);
+    } finally {
+      setVLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchHistory(window.limit, window.ms);
     fetchVehicles();
-  }, [windowIdx, fetchHistory, fetchVehicles]);
+    fetchVehicleHistory(window.ms);
+  }, [windowIdx, fetchHistory, fetchVehicles, fetchVehicleHistory]);
 
   // Metrics
   const metrics = useMemo(() => {
@@ -168,18 +254,37 @@ export default function HistoryPage() {
     [points, metrics.spikePoints],
   );
 
+  const vehicleChartData = useMemo(
+    () =>
+      vehicleHistory.map((p) => ({
+        time: p.timestamp.toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: false,
+        }),
+        Car: p.Car,
+        Jeep: p.Jeep,
+        Truck: p.Truck,
+        Tricycle: p.Tricycle,
+        Motorcycle: p.Motorcycle,
+        Bus: p.Bus,
+      })),
+    [vehicleHistory],
+  );
+
   const totalVehicles = Object.values(vehicles).reduce((a, b) => a + b, 0);
 
   const exportCSV = () => {
     const v = vehicles;
     const hasVehicles = totalVehicles > 0;
     const header = hasVehicles
-      ? 'Timestamp,PM2.5,Car,Van,Jeepney,Truck,Tricycle,Motorcycle,Bus\n'
+      ? 'Timestamp,PM2.5,Car,Jeep,Truck,Tricycle,Motorcycle,Bus\n'
       : 'Timestamp,PM2.5\n';
     const rows = points
       .map((p) =>
         hasVehicles
-          ? `${p.timestamp.toISOString()},${p.pm25},${v.Car},${v.Van},${v.Jeepney},${v.Truck},${v.Tricycle},${v.Motorcycle},${v.Bus}`
+          ? `${p.timestamp.toISOString()},${p.pm25},${v.Car},${v.Jeep},${v.Truck},${v.Tricycle},${v.Motorcycle},${v.Bus}`
           : `${p.timestamp.toISOString()},${p.pm25}`,
       )
       .join('\n');
@@ -322,46 +427,48 @@ export default function HistoryPage() {
             </ResponsiveContainer>
           </div>
 
-          {/* Vehicle Counts */}
+          {/* Vehicle Counts Over Time */}
           <div className='chart-section'>
-            <h3>Vehicle Counts (latest snapshot)</h3>
-            <ResponsiveContainer width='100%' height={200}>
-              <BarChart
-                data={[
-                  {
-                    Car: vehicles.Car,
-                    Van: vehicles.Van,
-                    Jeepney: vehicles.Jeepney,
-                    Truck: vehicles.Truck,
-                    Tricycle: vehicles.Tricycle,
-                    Motorcycle: vehicles.Motorcycle,
-                    Bus: vehicles.Bus,
-                  },
-                ]}
-              >
-                <CartesianGrid
-                  strokeDasharray='3 3'
-                  stroke='rgba(255,255,255,0.06)'
-                />
-                <XAxis dataKey='name' tick={false} />
-                <YAxis tick={{ fontSize: 10, fill: '#5a6978' }} />
-                <Tooltip
-                  contentStyle={{
-                    background: '#161b22',
-                    border: '1px solid rgba(0,217,255,0.2)',
-                    borderRadius: 6,
-                  }}
-                />
-                <Legend wrapperStyle={{ fontSize: 10 }} />
-                <Bar dataKey='Car' fill='#3b82f6' />
-                <Bar dataKey='Van' fill='#8b5cf6' />
-                <Bar dataKey='Jeepney' fill='#06b6d4' />
-                <Bar dataKey='Truck' fill='#ef4444' />
-                <Bar dataKey='Tricycle' fill='#ffa500' />
-                <Bar dataKey='Motorcycle' fill='#f59e0b' />
-                <Bar dataKey='Bus' fill='#8b5cf6' />
-              </BarChart>
-            </ResponsiveContainer>
+            <h3>Vehicle Counts Over Time</h3>
+            {vLoading ? (
+              <div className='history-loading'>Loading vehicle history...</div>
+            ) : vehicleHistory.length === 0 ? (
+              <div className='history-empty'>
+                No vehicle history data for this time window.
+              </div>
+            ) : (
+              <ResponsiveContainer width='100%' height={280}>
+                <LineChart data={vehicleChartData}>
+                  <CartesianGrid
+                    strokeDasharray='3 3'
+                    stroke='rgba(255,255,255,0.06)'
+                  />
+                  <XAxis
+                    dataKey='time'
+                    tick={{ fontSize: 10, fill: '#5a6978' }}
+                  />
+                  <YAxis tick={{ fontSize: 10, fill: '#5a6978' }} />
+                  <Tooltip
+                    contentStyle={{
+                      background: '#161b22',
+                      border: '1px solid rgba(0,217,255,0.2)',
+                      borderRadius: 6,
+                    }}
+                  />
+                  <Legend wrapperStyle={{ fontSize: 10 }} />
+                  {Object.keys(VEHICLE_COLORS).map((type) => (
+                    <Line
+                      key={type}
+                      type='monotone'
+                      dataKey={type}
+                      stroke={VEHICLE_COLORS[type]}
+                      strokeWidth={1.5}
+                      dot={false}
+                    />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            )}
           </div>
 
           {/* Reading Table */}

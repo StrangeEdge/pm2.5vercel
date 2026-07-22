@@ -1,5 +1,5 @@
 import type { SensorReading, VehicleCounts } from '../data/dummyData';
-import { VEHICLE_TYPES, totalVehicleCount } from '../data/dummyData';
+import { VEHICLE_TYPES, totalVehicleCount, emptyVehicleCounts } from '../data/dummyData';
 import './RightSidebar.css';
 
 interface RightSidebarProps {
@@ -9,8 +9,7 @@ interface RightSidebarProps {
 
 const VEHICLE_DISPLAY = [
   { name: 'Car', key: 'Car' as keyof VehicleCounts, icon: '🚗', color: '#3b82f6' },
-  { name: 'Van', key: 'Van' as keyof VehicleCounts, icon: '🚐', color: '#8b5cf6' },
-  { name: 'Jeepney', key: 'Jeepney' as keyof VehicleCounts, icon: '🚐', color: '#06b6d4' },
+  { name: 'Jeep', key: 'Jeep' as keyof VehicleCounts, icon: '🚐', color: '#06b6d4' },
   { name: 'Truck', key: 'Truck' as keyof VehicleCounts, icon: '🚚', color: '#ef4444' },
   { name: 'Tricycle', key: 'Tricycle' as keyof VehicleCounts, icon: '🛺', color: '#ffa500' },
   { name: 'Motorcycle', key: 'Motorcycle' as keyof VehicleCounts, icon: '🏍️', color: '#f59e0b' },
@@ -38,15 +37,7 @@ const RightSidebar: React.FC<RightSidebarProps> = ({
         totals[type] += reading.vehicles?.[type] || 0;
       });
       return totals;
-    }, {
-      Car: 0,
-      Van: 0,
-      Jeepney: 0,
-      Truck: 0,
-      Tricycle: 0,
-      Motorcycle: 0,
-      Bus: 0,
-    });
+    }, emptyVehicleCounts());
   };
 
   const vehicleCounts = getVehicleCounts();

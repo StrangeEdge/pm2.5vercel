@@ -23,8 +23,7 @@ export const seedTestData = async () => {
       const pm25 = Math.floor(Math.random() * 120) + 20;
       const vehicles = {
         Car: Math.floor(Math.random() * 8),
-        Van: Math.floor(Math.random() * 4),
-        Jeepney: Math.floor(Math.random() * 6),
+        Jeep: Math.floor(Math.random() * 6),
         Truck: Math.floor(Math.random() * 5),
         Tricycle: Math.floor(Math.random() * 4),
         Motorcycle: Math.floor(Math.random() * 6),

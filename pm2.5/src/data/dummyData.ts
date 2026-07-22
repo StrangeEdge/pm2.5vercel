@@ -3,8 +3,7 @@
 
 export interface VehicleCounts {
   Car: number;
-  Van: number;
-  Jeepney: number;
+  Jeep: number;
   Truck: number;
   Tricycle: number;
   Motorcycle: number;
@@ -13,8 +12,7 @@ export interface VehicleCounts {
 
 export const VEHICLE_TYPES: (keyof VehicleCounts)[] = [
   'Car',
-  'Van',
-  'Jeepney',
+  'Jeep',
   'Truck',
   'Tricycle',
   'Motorcycle',
@@ -23,8 +21,7 @@ export const VEHICLE_TYPES: (keyof VehicleCounts)[] = [
 
 export const emptyVehicleCounts = (): VehicleCounts => ({
   Car: 0,
-  Van: 0,
-  Jeepney: 0,
+  Jeep: 0,
   Truck: 0,
   Tricycle: 0,
   Motorcycle: 0,
@@ -49,7 +46,7 @@ export interface SensorReading {
 
 export interface Vehicle {
   id: string;
-  type: 'car' | 'van' | 'jeepney' | 'truck' | 'tricycle' | 'motorcycle' | 'bus';
+  type: 'car' | 'jeep' | 'truck' | 'tricycle' | 'motorcycle' | 'bus';
   detectedAt: Date;
   location: {
     lat: number;
@@ -93,8 +90,7 @@ export const generateDummyData = (): DashboardData => {
       status,
       vehicles: {
         Car: Math.floor(Math.random() * 8),
-        Van: Math.floor(Math.random() * 4),
-        Jeepney: Math.floor(Math.random() * 6),
+        Jeep: Math.floor(Math.random() * 6),
         Truck: Math.floor(Math.random() * 5),
         Tricycle: Math.floor(Math.random() * 4),
         Motorcycle: Math.floor(Math.random() * 6),
@@ -107,8 +103,7 @@ export const generateDummyData = (): DashboardData => {
   const vehicles: Vehicle[] = [];
   const vehicleTypes: Array<Vehicle['type']> = [
     'car',
-    'van',
-    'jeepney',
+    'jeep',
     'truck',
     'tricycle',
     'motorcycle',

@@ -31,17 +31,23 @@ SEND_INTERVAL = 5        # seconds between Firebase pushes
 SYNC_INTERVAL = 30       # seconds between backlog sync attempts
 MAX_BACKLOG_AGE = 86400  # 24 hours in seconds
 BACKLOG_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vehicle_backlog.json")
+VHIST_PATH     = f"/vehicle_history/{SENSOR_KEY}.json"
 
 PH_TIMEZONE   = timezone(timedelta(hours=8))  # Philippine Standard Time
 
-CLASS_NAMES  = ["Bus", "Car", "Jeepney", "Motorcycle", "Tricycle", "Truck"]
+CLASS_NAMES  = ["Bus", "Car", "Jeep", "Motorcycle", "Tricycle", "Truck"]
 
-# Dashboard expects these 7 types (Van is not in the Hailo model, always 0)
-DASHBOARD_VEHICLE_TYPES = ["Car", "Van", "Jeepney", "Truck", "Tricycle", "Motorcycle", "Bus"]
+# Map Hailo labels → dashboard keys
+HAILO_TO_DASHBOARD = {
+    "Bus": "Bus", "Car": "Car", "Jeep": "Jeep",
+    "Motorcycle": "Motorcycle", "Tricycle": "Tricycle", "Truck": "Truck",
+}
+
+DASHBOARD_VEHICLE_TYPES = ["Car", "Jeep", "Truck", "Tricycle", "Motorcycle", "Bus"]
 
 # ── Shared state (thread-safe between detection callback & Firebase thread) ──
 state_lock      = threading.Lock()
-seen_ids        = {name: set() for name in CLASS_NAMES}
+seen_ids        = {name: set() for name in DASHBOARD_VEHICLE_TYPES}
 last_push_time  = 0
 running         = True
 
@@ -53,13 +59,7 @@ running         = True
 def get_current_counts():
     """Return dict matching DASHBOARD_VEHICLE_TYPES from seen_ids."""
     with state_lock:
-        result = {}
-        for vt in DASHBOARD_VEHICLE_TYPES:
-            if vt in seen_ids:
-                result[vt] = len(seen_ids[vt])
-            else:
-                result[vt] = 0
-        return result
+        return {vt: len(seen_ids[vt]) for vt in DASHBOARD_VEHICLE_TYPES}
 
 
 def patch_vehicles_to_firebase(counts):
@@ -71,6 +71,23 @@ def patch_vehicles_to_firebase(counts):
     try:
         resp = requests.patch(
             f"{RTDB_URL}{PATCH_PATH}",
+            json=payload,
+            timeout=10,
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def push_vehicle_history(counts):
+    """POST vehicle counts to history path for time‑series chart."""
+    payload = {
+        "vehicles": counts,
+        "timestamp": datetime.now(PH_TIMEZONE).strftime("%Y-%m-%dT%H:%M:%S.000+08:00"),
+    }
+    try:
+        resp = requests.post(
+            f"{RTDB_URL}{VHIST_PATH}",
             json=payload,
             timeout=10,
         )
@@ -178,6 +195,9 @@ def firebase_thread():
                 save_vehicles_locally(counts)
                 was_offline = True
 
+            # Always push to vehicle history (independent of patch success)
+            push_vehicle_history(counts)
+
         # Periodic backlog sync
         if now - last_sync >= SYNC_INTERVAL:
             last_sync = now
@@ -236,11 +256,14 @@ def app_callback(element, buffer, user_data):
         if sv_dets.tracker_id is not None:
             with state_lock:
                 for i, tid in enumerate(sv_dets.tracker_id):
-                    cls_name = CLASS_NAMES[sv_dets.class_id[i]]
-                    if tid not in seen_ids[cls_name]:
-                        seen_ids[cls_name].add(tid)
+                    hailo_label = CLASS_NAMES[sv_dets.class_id[i]]
+                    dash_key = HAILO_TO_DASHBOARD.get(hailo_label)
+                    if dash_key is None:
+                        continue
+                    if tid not in seen_ids[dash_key]:
+                        seen_ids[dash_key].add(tid)
                         total = sum(len(s) for s in seen_ids.values())
-                        print(f"[{timestamp}] New {cls_name} | Track:{tid} | Total:{total}")
+                        print(f"[{timestamp}] New {dash_key} | Track:{tid} | Total:{total}")
 
     return Gst.PadProbeReturn.OK
 
@@ -284,8 +307,8 @@ if __name__ == "__main__":
     print("=" * 40)
     with state_lock:
         total = 0
-        for cls_name in CLASS_NAMES:
-            count = len(seen_ids[cls_name])
+        for dash_name in DASHBOARD_VEHICLE_TYPES:
+            count = len(seen_ids[dash_name])
             total += count
-            print(f"  {cls_name}: {count}")
+            print(f"  {dash_name}: {count}")
         print(f"  TOTAL: {total}")
