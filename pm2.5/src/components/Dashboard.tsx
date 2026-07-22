@@ -16,31 +16,35 @@ const Dashboard: React.FC = () => {
   const [isLive, setIsLive] = useState(true);
   const [isPaused, setIsPaused] = useState(false);
   const [isStale, setIsStale] = useState(false);
-  const [selectedSensor, setSelectedSensor] = useState<SensorReading | null>(null);
+  const [selectedSensor, setSelectedSensor] = useState<SensorReading | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
-  const [offlineSensorIds, setOfflineSensorIds] = useState<Set<string>>(new Set());
+  const [offlineSensorIds, setOfflineSensorIds] = useState<Set<string>>(
+    new Set(),
+  );
   const mountedRef = useRef(true);
   const fetchingRef = useRef(false);
 
   const applyData = (data: { sensorReadings: SensorReading[] }) => {
     setSensorReadings(data.sensorReadings);
 
-    setSelectedSensor(prev => {
+    setSelectedSensor((prev) => {
       if (data.sensorReadings.length === 0) return null;
       if (!prev) return data.sensorReadings[0];
-      const updated = data.sensorReadings.find(r => r.id === prev.id);
+      const updated = data.sensorReadings.find((r) => r.id === prev.id);
       return updated ?? data.sensorReadings[0];
     });
 
     if (data.sensorReadings.length > 0) {
       const latest = data.sensorReadings.reduce((a, b) =>
-        a.timestamp > b.timestamp ? a : b
+        a.timestamp > b.timestamp ? a : b,
       );
       const now = Date.now();
       setIsStale(now - latest.timestamp.getTime() > STALE_DATA_MS);
 
       const offline = new Set<string>();
-      data.sensorReadings.forEach(r => {
+      data.sensorReadings.forEach((r) => {
         if (now - r.timestamp.getTime() > SENSOR_OFFLINE_MS) {
           offline.add(r.id);
         }
@@ -65,10 +69,20 @@ const Dashboard: React.FC = () => {
       fetchingRef.current = true;
 
       getRealtimeData()
-        .then(data => { if (mountedRef.current) applyData(data); })
-        .catch(() => { if (mountedRef.current) { setError('Failed to connect to Firebase'); setIsLive(false); } })
+        .then((data) => {
+          if (mountedRef.current) applyData(data);
+        })
+        .catch(() => {
+          if (mountedRef.current) {
+            setError('Failed to connect to Firebase');
+            setIsLive(false);
+          }
+        })
         .finally(() => {
-          if (mountedRef.current) { setLoading(false); fetchingRef.current = false; }
+          if (mountedRef.current) {
+            setLoading(false);
+            fetchingRef.current = false;
+          }
         });
     };
 
@@ -82,7 +96,7 @@ const Dashboard: React.FC = () => {
   }, [isPaused]);
 
   const handleTogglePause = () => {
-    setIsPaused(prev => !prev);
+    setIsPaused((prev) => !prev);
   };
 
   const handleSelectSensor = (sensor: SensorReading) => {
@@ -91,8 +105,8 @@ const Dashboard: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="dashboard-loading">
-        <div className="spinner"></div>
+      <div className='dashboard-loading'>
+        <div className='spinner'></div>
         <p>Loading data from Firebase Realtime Database...</p>
       </div>
     );
@@ -100,7 +114,7 @@ const Dashboard: React.FC = () => {
 
   if (error) {
     return (
-      <div className="dashboard-loading">
+      <div className='dashboard-loading'>
         <p>Error: {error}</p>
         <p style={{ fontSize: '12px', marginTop: '10px' }}>
           Make sure Firebase Realtime Database is properly configured.
@@ -111,7 +125,7 @@ const Dashboard: React.FC = () => {
 
   if (sensorReadings.length === 0) {
     return (
-      <div className="dashboard-loading">
+      <div className='dashboard-loading'>
         <p>No data available from Firebase</p>
         <p style={{ fontSize: '12px', marginTop: '10px' }}>
           Make sure data exists in your Realtime Database at path: /pm25_data
@@ -120,26 +134,32 @@ const Dashboard: React.FC = () => {
     );
   }
 
-  const activeCount = sensorReadings.filter(r => !offlineSensorIds.has(r.id)).length;
+  const elevatedHotspots = sensorReadings.filter(
+    (reading) => reading.hotspotTier === 'elevated',
+  ).length;
+  const criticalHotspots = sensorReadings.filter(
+    (reading) => reading.hotspotTier === 'critical',
+  ).length;
 
   return (
-    <div className="dashboard">
+    <div className='dashboard'>
       {isStale && (
-        <div className="stale-banner">
+        <div className='stale-banner'>
           No recent readings from sensors. Last reading was over 5 minutes ago.
         </div>
       )}
 
       <StatsHeader
         sensorReadings={sensorReadings}
-        activeNodes={activeCount}
+        elevatedHotspots={elevatedHotspots}
+        criticalHotspots={criticalHotspots}
         isLive={isLive}
         isPaused={isPaused}
         onTogglePause={handleTogglePause}
       />
 
-      <div className="dashboard-content">
-        <div className="left-panel">
+      <div className='dashboard-content'>
+        <div className='left-panel'>
           <LeftSidebar
             sensorReadings={sensorReadings}
             selectedSensor={selectedSensor}
@@ -148,7 +168,7 @@ const Dashboard: React.FC = () => {
           />
         </div>
 
-        <div className="center-panel">
+        <div className='center-panel'>
           <MapComponent
             sensorReadings={sensorReadings}
             selectedSensor={selectedSensor}
@@ -156,7 +176,7 @@ const Dashboard: React.FC = () => {
           />
         </div>
 
-        <div className="right-panel">
+        <div className='right-panel'>
           <RightSidebar
             sensorReadings={sensorReadings}
             selectedSensor={selectedSensor}

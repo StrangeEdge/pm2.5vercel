@@ -96,6 +96,21 @@
   color: #8892a0;
 }
 
+.popup-flagged {
+  color: #ff8a8a !important;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-top: 6px;
+}
+
+.popup-hotspot {
+  color: #ffb000;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .popup-time {
   font-size: 10px;
   color: #5a6978;

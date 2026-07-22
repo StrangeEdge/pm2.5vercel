@@ -31,6 +31,59 @@ export const emptyVehicleCounts = (): VehicleCounts => ({
 export const totalVehicleCount = (vehicles: VehicleCounts): number =>
   VEHICLE_TYPES.reduce((sum, type) => sum + (vehicles[type] || 0), 0);
 
+export type PM25Status =
+  | 'good'
+  | 'moderate'
+  | 'unhealthy_for_sensitive'
+  | 'unhealthy'
+  | 'very_unhealthy'
+  | 'hazardous';
+
+export const PM25_STATUS_META: Record<
+  PM25Status,
+  { label: string; color: string; flagged: boolean }
+> = {
+  good: { label: 'Good', color: '#21db15', flagged: false },
+  moderate: { label: 'Moderate', color: '#ffd700', flagged: false },
+  unhealthy_for_sensitive: {
+    label: 'Unhealthy for Sensitive Groups',
+    color: '#ffa500',
+    flagged: true,
+  },
+  unhealthy: { label: 'Unhealthy', color: '#ff3333', flagged: true },
+  very_unhealthy: { label: 'Very Unhealthy', color: '#c026d3', flagged: true },
+  hazardous: { label: 'Hazardous', color: '#7f1d1d', flagged: true },
+};
+
+export const isFlaggedPM25Status = (status: PM25Status): boolean =>
+  PM25_STATUS_META[status].flagged;
+
+export const getPM25StatusLabel = (status: PM25Status): string =>
+  PM25_STATUS_META[status].label;
+
+export const getPM25StatusColor = (status: PM25Status): string =>
+  PM25_STATUS_META[status].color;
+
+export type HotspotTier = 'none' | 'elevated' | 'critical';
+
+export const HOTSPOT_TIER_META: Record<
+  HotspotTier,
+  { label: string; color: string; flagged: boolean }
+> = {
+  none: { label: 'None', color: '#8892a0', flagged: false },
+  elevated: { label: 'Elevated', color: '#ffb000', flagged: true },
+  critical: { label: 'Critical Hotspot', color: '#ff3333', flagged: true },
+};
+
+export const getHotspotTierLabel = (tier: HotspotTier): string =>
+  HOTSPOT_TIER_META[tier].label;
+
+export const getHotspotTierColor = (tier: HotspotTier): string =>
+  HOTSPOT_TIER_META[tier].color;
+
+export const isHotspotTierFlagged = (tier: HotspotTier): boolean =>
+  HOTSPOT_TIER_META[tier].flagged;
+
 export interface SensorReading {
   id: string;
   pm25: number; // μg/m³
@@ -40,94 +93,12 @@ export interface SensorReading {
     name: string;
   };
   timestamp: Date;
-  status: 'good' | 'moderate' | 'unhealthy_for_sensitive' | 'unhealthy';
+  status: PM25Status;
+  hotspotTier: HotspotTier;
   vehicles: VehicleCounts;
 }
 
-export interface Vehicle {
-  id: string;
-  type: 'car' | 'jeep' | 'truck' | 'tricycle' | 'motorcycle' | 'bus';
-  detectedAt: Date;
-  location: {
-    lat: number;
-    lng: number;
-  };
-  confidence: number; // 0-1
-}
-
-export interface DashboardData {
-  sensorReadings: SensorReading[];
-  vehicles: Vehicle[];
-}
-
-// Generate dummy data for Las Piñas area
-export const generateDummyData = (): DashboardData => {
-  const now = new Date();
-  const lasPinasCenter = { lat: 14.3534, lng: 120.9895 };
-
-  // Generate 5 sensor reading locations in Las Piñas
-  const sensorLocations = [
-    { lat: 14.3534, lng: 120.9895, name: 'Las Piñas Central' },
-    { lat: 14.3450, lng: 120.9850, name: 'Pacita Complex' },
-    { lat: 14.3620, lng: 120.9920, name: 'CBD Area' },
-    { lat: 14.3380, lng: 121.0050, name: 'Industrial Zone' },
-    { lat: 14.3700, lng: 120.9750, name: 'Residential Area' },
-  ];
-
-  const sensorReadings: SensorReading[] = sensorLocations.map((loc, idx) => {
-    const pm25 = Math.floor(Math.random() * 250) + 15; // 15-265 μg/m³
-    let status: 'good' | 'moderate' | 'unhealthy_for_sensitive' | 'unhealthy';
-    if (pm25 <= 35) status = 'good';
-    else if (pm25 <= 75) status = 'moderate';
-    else if (pm25 <= 115) status = 'unhealthy_for_sensitive';
-    else status = 'unhealthy';
-
-    return {
-      id: `sensor_${idx}`,
-      pm25,
-      location: loc,
-      timestamp: new Date(now.getTime() - Math.random() * 3600000), // Within last hour
-      status,
-      vehicles: {
-        Car: Math.floor(Math.random() * 8),
-        Jeep: Math.floor(Math.random() * 6),
-        Truck: Math.floor(Math.random() * 5),
-        Tricycle: Math.floor(Math.random() * 4),
-        Motorcycle: Math.floor(Math.random() * 6),
-        Bus: Math.floor(Math.random() * 3),
-      },
-    };
-  });
-
-  // Generate vehicle detection data
-  const vehicles: Vehicle[] = [];
-  const vehicleTypes: Array<Vehicle['type']> = [
-    'car',
-    'jeep',
-    'truck',
-    'tricycle',
-    'motorcycle',
-    'bus',
-  ];
-
-  for (let i = 0; i < 12; i++) {
-    vehicles.push({
-      id: `vehicle_${i}`,
-      type: vehicleTypes[Math.floor(Math.random() * vehicleTypes.length)],
-      detectedAt: new Date(now.getTime() - Math.random() * 1800000), // Within last 30 mins
-      location: {
-        lat: lasPinasCenter.lat + (Math.random() - 0.5) * 0.1,
-        lng: lasPinasCenter.lng + (Math.random() - 0.5) * 0.1,
-      },
-      confidence: Math.random() * 0.3 + 0.7, // 0.7-1.0 confidence
-    });
-  }
-
-  return {
-    sensorReadings,
-    vehicles,
-  };
-};
-
-// Initialize dummy data
-export const dummyData = generateDummyData();
+// NOTE: keep only the types/constants that the dashboard uses directly.
+// The previous file included generated sample data and helper `Vehicle` /
+// `DashboardData` shapes used for examples; those have been removed to
+// avoid exporting unused scaffolding.

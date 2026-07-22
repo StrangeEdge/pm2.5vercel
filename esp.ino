@@ -24,8 +24,8 @@
 #include "time.h"
 
 // ── WiFi ─────────────────────────────────────────────────────
-const char* WIFI_SSID = "Testt";
-const char* WIFI_PASS = "pocotestx7";
+const char* WIFI_SSID = "TECNO";
+const char* WIFI_PASS = "12345678";
 
 // ── NTP (Philippine Standard Time = UTC+8, no DST) ───────────
 const char* NTP_SERVER   = "pool.ntp.org";
@@ -33,10 +33,17 @@ const long  GMT_OFFSET   = 8 * 3600;   // +8 hours
 const int   DST_OFFSET   = 0;          // Philippines has no DST
 
 // ── Firebase RTDB ────────────────────────────────────────────
-const char*  RTDB_HOST    = "pm25map-9f801-default-rtdb.asia-southeast1.firebasedatabase.app";
+const char*  RTDB_HOST    = "my-pm25-3edea-default-rtdb.asia-southeast1.firebasedatabase.app";
 const char*  RTDB_PATH    = "/pm25_data/esp32-sensor-01.json";   // live state (PATCH)
 const char*  HIST_PATH    = "/pm25_history/esp32-sensor-01.json"; // time series (POST)
 const int    HTTPS_PORT   = 443;
+
+// ── Firebase Auth (anonymous sign-in via Identity Toolkit) ───
+const char* FIREBASE_HOST    = "identitytoolkit.googleapis.com";
+const char* FIREBASE_API_KEY = "AIzaSyCzZr44dIv3wEPbKstmrcJRL59vxszdH8w";
+
+String idToken = "";
+unsigned long tokenExpiresAt = 0;  // millis() timestamp when token needs refresh
 
 // ── Sensor location (fixed) ───────────────────────────────────
 const double SENSOR_LAT = 14.448133836842521;
@@ -307,10 +314,81 @@ unsigned long isoToEpoch(const char* iso) {
 }
 
 // ─────────────────────────────────────────────────────────────
+//  Sign in anonymously via Firebase Identity Toolkit and store
+//  the resulting ID token (used as ?auth= on RTDB requests)
+// ─────────────────────────────────────────────────────────────
+bool signInAnonymously() {
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  if (!client.connect(FIREBASE_HOST, HTTPS_PORT)) {
+    Serial.println("[AUTH] Connection to Identity Toolkit failed");
+    return false;
+  }
+
+  String body = "{\"returnSecureToken\":true}";
+  String path = String("/v1/accounts:signUp?key=") + FIREBASE_API_KEY;
+
+  String req = String("POST ") + path + " HTTP/1.1\r\n" +
+               "Host: " + FIREBASE_HOST + "\r\n" +
+               "Content-Type: application/json\r\n" +
+               "Content-Length: " + body.length() + "\r\n" +
+               "Connection: close\r\n\r\n" +
+               body;
+
+  client.print(req);
+
+  unsigned long timeout = millis() + 5000;
+  while (!client.available() && millis() < timeout) delay(10);
+
+  // Read status line
+  String statusLine = client.readStringUntil('\n');
+  if (statusLine.indexOf("200") < 0) {
+    Serial.print("[AUTH] Sign-in failed: ");
+    Serial.println(statusLine);
+    client.stop();
+    return false;
+  }
+
+  // Skip remaining headers
+  while (client.connected()) {
+    String line = client.readStringUntil('\n');
+    if (line == "\r") break;  // end of headers
+  }
+
+  String payload = client.readString();
+  client.stop();
+
+  DynamicJsonDocument doc(2048);
+  DeserializationError err = deserializeJson(doc, payload);
+  if (err) {
+    Serial.printf("[AUTH] JSON parse error: %s\n", err.c_str());
+    return false;
+  }
+
+  idToken = doc["idToken"].as<String>();
+  long expiresIn = doc["expiresIn"].as<String>().toInt();  // seconds, usually "3600"
+  tokenExpiresAt = millis() + (expiresIn > 60 ? (expiresIn - 60) * 1000UL : 3000000UL); // refresh 60s early
+
+  if (idToken.length() == 0) {
+    Serial.println("[AUTH] No idToken in response");
+    return false;
+  }
+
+  Serial.println("[AUTH] Signed in anonymously, token acquired");
+  return true;
+}
+
+// ─────────────────────────────────────────────────────────────
 //  PATCH sensor reading to Firebase (merges — won't clobber
 //  vehicle counts written by the Raspberry Pi)
 // ─────────────────────────────────────────────────────────────
 bool sendToFirebase(uint16_t pm25, const char* timestamp) {
+  if (idToken.length() == 0) {
+    Serial.println("[PATCH] No auth token yet, skipping");
+    return false;
+  }
+
   WiFiClientSecure client;
   client.setInsecure();  // skip cert validation (ESP32 memory constrained)
 
@@ -328,7 +406,7 @@ bool sendToFirebase(uint16_t pm25, const char* timestamp) {
   String body;
   serializeJson(doc, body);
 
-  String req = String("PATCH ") + RTDB_PATH + " HTTP/1.1\r\n" +
+  String req = String("PATCH ") + RTDB_PATH + "?auth=" + idToken + " HTTP/1.1\r\n" +
                "Host: " + RTDB_HOST + "\r\n" +
                "Content-Type: application/json\r\n" +
                "Content-Length: " + body.length() + "\r\n" +
@@ -353,7 +431,7 @@ bool sendToFirebase(uint16_t pm25, const char* timestamp) {
 
     String histBody = String("{\"pm25\":") + pm25 + ",\"timestamp\":\"" + timestamp + "\"}";
 
-    String histReq = String("POST ") + HIST_PATH + " HTTP/1.1\r\n" +
+    String histReq = String("POST ") + HIST_PATH + "?auth=" + idToken + " HTTP/1.1\r\n" +
                      "Host: " + RTDB_HOST + "\r\n" +
                      "Content-Type: application/json\r\n" +
                      "Content-Length: " + histBody.length() + "\r\n" +
@@ -514,6 +592,7 @@ void setup() {
     Serial.println("\nWiFi connected.");
     configTime(GMT_OFFSET, DST_OFFSET, NTP_SERVER);
     Serial.println("NTP syncing...");
+    signInAnonymously();
   } else {
     Serial.println("\nWiFi failed — time will show 'Syncing...'");
   }
@@ -536,6 +615,11 @@ void setup() {
 // ─────────────────────────────────────────────────────────────
 void loop() {
   unsigned long now = millis();
+
+  // ── Refresh Firebase auth token before it expires ──
+  if ((idToken.length() == 0 || now > tokenExpiresAt) && WiFi.status() == WL_CONNECTED) {
+    signInAnonymously();
+  }
 
   // ── Read sensor every 1 s ──
   if (now - lastRead >= READ_INTERVAL) {

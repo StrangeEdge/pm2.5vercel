@@ -12,6 +12,12 @@ import {
 } from 'recharts';
 import './HistoryPage.css';
 import { getAuthToken } from '../config/firebaseConfig';
+import {
+  classifyHotspotSession,
+  type TimestampedPmReading,
+  type TimestampedVehicleReading,
+} from '../utils/hotspotClassification';
+import { getHotspotTierColor, getHotspotTierLabel } from '../data/dummyData';
 
 const RTDB_URL = import.meta.env.VITE_RTDB_URL;
 
@@ -67,8 +73,14 @@ const VEHICLE_COLORS: Record<string, string> = {
 export default function HistoryPage() {
   const [windowIdx, setWindowIdx] = useState(1); // default 30m
   const [points, setPoints] = useState<HistoryPoint[]>([]);
+  const [allPoints, setAllPoints] = useState<HistoryPoint[]>([]);
   const [vehicles, setVehicles] = useState<VehicleCounts>(EMPTY_VEHICLES);
-  const [vehicleHistory, setVehicleHistory] = useState<VehicleHistoryPoint[]>([]);
+  const [vehicleHistory, setVehicleHistory] = useState<VehicleHistoryPoint[]>(
+    [],
+  );
+  const [allVehicleHistory, setAllVehicleHistory] = useState<
+    VehicleHistoryPoint[]
+  >([]);
   const [loading, setLoading] = useState(true);
   const [vLoading, setVLoading] = useState(true);
 
@@ -92,7 +104,7 @@ export default function HistoryPage() {
 
       const now = Date.now();
       const cutoff = now - ms;
-      const parsed: HistoryPoint[] = [];
+      const parsedAll: HistoryPoint[] = [];
 
       for (const key of Object.keys(raw)) {
         const d = raw[key];
@@ -100,15 +112,18 @@ export default function HistoryPage() {
         const pm = d.pm25 ?? d.pm2_5 ?? d.value;
         const ts = d.timestamp;
         if (typeof pm !== 'number' || typeof ts !== 'string') continue;
-        const t = new Date(ts).getTime();
-        if (isNaN(t) || t < cutoff) continue;
-        parsed.push({ pm25: pm, timestamp: new Date(ts) });
+        parsedAll.push({ pm25: pm, timestamp: new Date(ts) });
       }
-      parsed.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-      setPoints(parsed);
+      parsedAll.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+      const parsedWindow = parsedAll.filter(
+        (point) => point.timestamp.getTime() >= cutoff,
+      );
+      setAllPoints(parsedAll);
+      setPoints(parsedWindow);
     } catch (err) {
       console.error('[fetchHistory] failed:', err);
       setPoints([]);
+      setAllPoints([]);
     } finally {
       setLoading(false);
     }
@@ -141,7 +156,7 @@ export default function HistoryPage() {
     setVLoading(true);
     try {
       const token = await getAuthToken();
-      const parsed: VehicleHistoryPoint[] = [];
+      const parsedAll: VehicleHistoryPoint[] = [];
       const now = Date.now();
       const cutoff = now - ms;
 
@@ -157,9 +172,7 @@ export default function HistoryPage() {
             const ts = d.timestamp ?? d.vehicles_timestamp;
             const v = d.vehicles;
             if (typeof ts !== 'string' || !v || typeof v !== 'object') continue;
-            const t = new Date(ts).getTime();
-            if (isNaN(t) || t < cutoff) continue;
-            parsed.push({
+            parsedAll.push({
               timestamp: new Date(ts),
               Car: Number(v.Car) || 0,
               Jeep: Number(v.Jeep) || 0,
@@ -183,7 +196,7 @@ export default function HistoryPage() {
           if (typeof ts === 'string' && v && typeof v === 'object') {
             const t = new Date(ts).getTime();
             if (!isNaN(t) && t >= cutoff) {
-              parsed.push({
+              parsedAll.push({
                 timestamp: new Date(ts),
                 Car: Number(v.Car) || 0,
                 Jeep: Number(v.Jeep) || 0,
@@ -197,20 +210,61 @@ export default function HistoryPage() {
         }
       }
 
-      parsed.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-      setVehicleHistory(parsed);
+      parsedAll.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+      const parsedWindow = parsedAll.filter(
+        (point) => point.timestamp.getTime() >= cutoff,
+      );
+      setAllVehicleHistory(parsedAll);
+      setVehicleHistory(parsedWindow);
     } catch (err) {
       console.error('[fetchVehicleHistory] failed:', err);
+      setAllVehicleHistory([]);
+      setVehicleHistory([]);
     } finally {
       setVLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    fetchHistory(window.limit, window.ms);
-    fetchVehicles();
-    fetchVehicleHistory(window.ms);
-  }, [windowIdx, fetchHistory, fetchVehicles, fetchVehicleHistory]);
+    (async () => {
+      try {
+        await fetchHistory(window.limit, window.ms);
+        await fetchVehicles();
+        await fetchVehicleHistory(window.ms);
+      } catch (e) {
+        console.error('[HistoryPage] fetch error', e);
+      }
+    })();
+  }, [
+    windowIdx,
+    window.limit,
+    window.ms,
+    fetchHistory,
+    fetchVehicles,
+    fetchVehicleHistory,
+  ]);
+
+  const hotspotSession = useMemo(() => {
+    const pmReadings: TimestampedPmReading[] = allPoints.map((point) => ({
+      timestamp: point.timestamp,
+      pm25: point.pm25,
+    }));
+    const vehicleReadings: TimestampedVehicleReading[] = allVehicleHistory.map(
+      (point) => ({
+        timestamp: point.timestamp,
+        vehicles: {
+          Car: point.Car,
+          Jeep: point.Jeep,
+          Truck: point.Truck,
+          Tricycle: point.Tricycle,
+          Motorcycle: point.Motorcycle,
+          Bus: point.Bus,
+        },
+      }),
+    );
+
+    return classifyHotspotSession(pmReadings, vehicleReadings);
+  }, [allPoints, allVehicleHistory]);
 
   // Metrics
   const metrics = useMemo(() => {
@@ -344,10 +398,30 @@ export default function HistoryPage() {
           <span className='metric-value'>{totalVehicles}</span>
         </div>
         <div className='metric'>
+          <span className='metric-label'>Hotspot</span>
+          <span
+            className='metric-value'
+            style={{ color: getHotspotTierColor(hotspotSession.hotspotTier) }}
+          >
+            {getHotspotTierLabel(hotspotSession.hotspotTier)}
+          </span>
+        </div>
+        <div className='metric'>
+          <span className='metric-label'>Traffic Baseline</span>
+          <span className='metric-value'>
+            {hotspotSession.sessionMeanVehicleRatePerMinute.toFixed(1)}
+          </span>
+        </div>
+        <div className='metric'>
           <span className='metric-label'>Readings</span>
           <span className='metric-value'>{points.length}</span>
         </div>
       </div>
+
+      <p className='hotspot-note'>
+        Hotspot tier uses 1-minute vehicle-rate windows, a 5-minute baseline
+        warm-up, and a 10-minute sustained run requirement.
+      </p>
 
       {loading ? (
         <div className='history-loading'>Loading history...</div>
@@ -377,7 +451,15 @@ export default function HistoryPage() {
                     border: '1px solid rgba(0,217,255,0.2)',
                     borderRadius: 6,
                   }}
-                  formatter={(val: number) => [`${val} µg/m³`, 'PM2.5']}
+                  formatter={(val: unknown) => {
+                    const num =
+                      typeof val === 'number'
+                        ? val
+                        : typeof val === 'string' && val.trim() !== ''
+                          ? Number(val)
+                          : NaN;
+                    return [isNaN(num) ? 'N/A µg/m³' : `${num} µg/m³`, 'PM2.5'];
+                  }}
                 />
                 <ReferenceLine
                   y={metrics.threshold}
@@ -526,15 +608,19 @@ export default function HistoryPage() {
 }
 
 function getStatusLabel(pm25: number): string {
-  if (pm25 <= 35) return 'Good';
-  if (pm25 <= 75) return 'Moderate';
-  if (pm25 <= 115) return 'Unhealthy*';
-  return 'Unhealthy';
+  if (pm25 <= 9) return 'Good';
+  if (pm25 <= 35.4) return 'Moderate';
+  if (pm25 <= 55.4) return 'Unhealthy for Sensitive Groups';
+  if (pm25 <= 125.4) return 'Unhealthy';
+  if (pm25 <= 225.4) return 'Very Unhealthy';
+  return 'Hazardous';
 }
 
 function getStatusClass(pm25: number): string {
-  if (pm25 <= 35) return 'status-good';
-  if (pm25 <= 75) return 'status-moderate';
-  if (pm25 <= 115) return 'status-sensitive';
-  return 'status-unhealthy';
+  if (pm25 <= 9) return 'status-good';
+  if (pm25 <= 35.4) return 'status-moderate';
+  if (pm25 <= 55.4) return 'status-sensitive';
+  if (pm25 <= 125.4) return 'status-unhealthy';
+  if (pm25 <= 225.4) return 'status-very-unhealthy';
+  return 'status-hazardous';
 }

@@ -98,6 +98,10 @@
   font-weight: 700;
 }
 
+.data-value-hotspot {
+  font-weight: 800;
+}
+
 /* AQI Scale Section */
 .aqi-scale {
   display: flex;

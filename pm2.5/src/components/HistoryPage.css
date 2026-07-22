@@ -177,10 +177,30 @@
   background: rgba(255, 50, 50, 0.12);
 }
 
-.status-good { color: #21db15; font-weight: 600; }
-.status-moderate { color: #ffd700; font-weight: 600; }
-.status-sensitive { color: #ffa500; font-weight: 600; }
-.status-unhealthy { color: #ff3333; font-weight: 600; }
+.status-good {
+  color: #21db15;
+  font-weight: 600;
+}
+.status-moderate {
+  color: #ffd700;
+  font-weight: 600;
+}
+.status-sensitive {
+  color: #ffa500;
+  font-weight: 600;
+}
+.status-unhealthy {
+  color: #ff3333;
+  font-weight: 600;
+}
+.status-very-unhealthy {
+  color: #c026d3;
+  font-weight: 600;
+}
+.status-hazardous {
+  color: #7f1d1d;
+  font-weight: 600;
+}
 
 .table-note {
   font-size: 10px;
@@ -188,6 +208,13 @@
   text-align: center;
   padding: 6px;
   margin: 0;
+}
+
+.hotspot-note {
+  margin: 0;
+  padding: 0 16px 8px;
+  font-size: 10px;
+  color: #5a6978;
 }
 
 @media (max-width: 768px) {
