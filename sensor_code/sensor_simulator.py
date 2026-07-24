@@ -4,10 +4,9 @@ Sends simulated sensor data to Firebase Realtime Database
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox
 import json
 from datetime import datetime, timezone
-from pathlib import Path
 import pyrebase4
 
 VEHICLE_TYPES = [

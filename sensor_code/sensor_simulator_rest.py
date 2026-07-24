@@ -15,8 +15,7 @@ RTDB_URL = "https://pm25map-9f801-default-rtdb.asia-southeast1.firebasedatabase.
 
 VEHICLE_TYPES = [
     "Car",
-    "Van",
-    "Jeepney",
+    "Jeep",
     "Truck",
     "Tricycle",
     "Motorcycle",
@@ -25,8 +24,7 @@ VEHICLE_TYPES = [
 
 DEFAULT_VEHICLE_COUNTS = {
     "Car": 5,
-    "Van": 0,
-    "Jeepney": 4,
+    "Jeep": 4,
     "Truck": 5,
     "Tricycle": 0,
     "Motorcycle": 0,
