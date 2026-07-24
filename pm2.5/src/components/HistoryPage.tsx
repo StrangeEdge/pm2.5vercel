@@ -404,7 +404,6 @@ export default function HistoryPage() {
     // finds, for each PM reading, the most recent vehicle-history entry at
     // or before that reading's timestamp (an "as-of" match) — matching how
     // the Pi actually reports vehicle state: valid until its next push.
-    let vIdx = 0;
     const rows = points
       .map((p) => {
         if (!hasVehicles) return `${p.timestamp.toISOString()},${p.pm25}`;
