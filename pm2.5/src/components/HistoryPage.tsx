@@ -14,6 +14,7 @@ import './HistoryPage.css';
 import { getAuthToken } from '../config/firebaseConfig';
 import {
   classifyHotspotSession,
+  HOTSPOT_SESSION_GAP_MINUTES,
   type TimestampedPmReading,
   type TimestampedVehicleReading,
 } from '../utils/hotspotClassification';
@@ -43,13 +44,13 @@ interface VehicleCounts {
 }
 
 const TIME_WINDOWS = [
-  { label: '5m', ms: 5 * 60 * 1000, limit: 60 },
-  { label: '30m', ms: 30 * 60 * 1000, limit: 360 },
-  { label: '1h', ms: 60 * 60 * 1000, limit: 720 },
-  { label: '6h', ms: 6 * 60 * 60 * 1000, limit: 720 },
-  { label: '12h', ms: 12 * 60 * 60 * 1000, limit: 2000 },
-  { label: '24h', ms: 24 * 60 * 60 * 1000, limit: 2000 },
-  { label: '1w', ms: 7 * 24 * 60 * 60 * 1000, limit: 2000 },
+  { label: '5m', ms: 5 * 60 * 1000 },
+  { label: '30m', ms: 30 * 60 * 1000 },
+  { label: '1h', ms: 60 * 60 * 1000 },
+  { label: '6h', ms: 6 * 60 * 60 * 1000 },
+  { label: '12h', ms: 12 * 60 * 60 * 1000 },
+  { label: '24h', ms: 24 * 60 * 60 * 1000 },
+  { label: '1w', ms: 7 * 24 * 60 * 60 * 1000 },
 ];
 
 const EMPTY_VEHICLES: VehicleCounts = {
@@ -70,24 +71,35 @@ const VEHICLE_COLORS: Record<string, string> = {
   Bus: '#8b5cf6',
 };
 
+function todayISODate(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 export default function HistoryPage() {
   const [windowIdx, setWindowIdx] = useState(1); // default 30m
-  const [points, setPoints] = useState<HistoryPoint[]>([]);
+  const [customMode, setCustomMode] = useState(false);
+  const [customDate, setCustomDate] = useState<string>(todayISODate());
+  const [customStart, setCustomStart] = useState<string>('08:00');
+  const [customEnd, setCustomEnd] = useState<string>('09:00');
+
+  // Full, unfiltered datasets pulled from Firebase.
   const [allPoints, setAllPoints] = useState<HistoryPoint[]>([]);
-  const [vehicles, setVehicles] = useState<VehicleCounts>(EMPTY_VEHICLES);
-  const [vehicleHistory, setVehicleHistory] = useState<VehicleHistoryPoint[]>(
-    [],
-  );
   const [allVehicleHistory, setAllVehicleHistory] = useState<
     VehicleHistoryPoint[]
   >([]);
+  const [vehicles, setVehicles] = useState<VehicleCounts>(EMPTY_VEHICLES);
+
   const [loading, setLoading] = useState(true);
   const [vLoading, setVLoading] = useState(true);
 
   const window = TIME_WINDOWS[windowIdx];
 
-  // fetch raw history, filter client-side by time window
-  const fetchHistory = useCallback(async (_limit: number, ms: number) => {
+  // fetch full raw history — filtering to a window happens client-side
+  const fetchHistory = useCallback(async () => {
     setLoading(true);
     try {
       const token = await getAuthToken();
@@ -97,15 +109,11 @@ export default function HistoryPage() {
       const raw = await resp.json();
 
       if (!raw) {
-        setPoints([]);
-        setLoading(false);
+        setAllPoints([]);
         return;
       }
 
-      const now = Date.now();
-      const cutoff = now - ms;
       const parsedAll: HistoryPoint[] = [];
-
       for (const key of Object.keys(raw)) {
         const d = raw[key];
         if (!d || typeof d !== 'object') continue;
@@ -115,14 +123,9 @@ export default function HistoryPage() {
         parsedAll.push({ pm25: pm, timestamp: new Date(ts) });
       }
       parsedAll.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-      const parsedWindow = parsedAll.filter(
-        (point) => point.timestamp.getTime() >= cutoff,
-      );
       setAllPoints(parsedAll);
-      setPoints(parsedWindow);
     } catch (err) {
       console.error('[fetchHistory] failed:', err);
-      setPoints([]);
       setAllPoints([]);
     } finally {
       setLoading(false);
@@ -152,13 +155,11 @@ export default function HistoryPage() {
     }
   }, []);
 
-  const fetchVehicleHistory = useCallback(async (ms: number) => {
+  const fetchVehicleHistory = useCallback(async () => {
     setVLoading(true);
     try {
       const token = await getAuthToken();
       const parsedAll: VehicleHistoryPoint[] = [];
-      const now = Date.now();
-      const cutoff = now - ms;
 
       // 1. Fetch time series from /vehicle_history
       const vHistUrl = `${RTDB_URL}/vehicle_history/esp32-sensor-01.json?auth=${token}`;
@@ -194,57 +195,81 @@ export default function HistoryPage() {
           const ts = snap.vehicles_timestamp;
           const v = snap.vehicles;
           if (typeof ts === 'string' && v && typeof v === 'object') {
-            const t = new Date(ts).getTime();
-            if (!isNaN(t) && t >= cutoff) {
-              parsedAll.push({
-                timestamp: new Date(ts),
-                Car: Number(v.Car) || 0,
-                Jeep: Number(v.Jeep) || 0,
-                Truck: Number(v.Truck) || 0,
-                Tricycle: Number(v.Tricycle) || 0,
-                Motorcycle: Number(v.Motorcycle) || 0,
-                Bus: Number(v.Bus) || 0,
-              });
-            }
+            parsedAll.push({
+              timestamp: new Date(ts),
+              Car: Number(v.Car) || 0,
+              Jeep: Number(v.Jeep) || 0,
+              Truck: Number(v.Truck) || 0,
+              Tricycle: Number(v.Tricycle) || 0,
+              Motorcycle: Number(v.Motorcycle) || 0,
+              Bus: Number(v.Bus) || 0,
+            });
           }
         }
       }
 
       parsedAll.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-      const parsedWindow = parsedAll.filter(
-        (point) => point.timestamp.getTime() >= cutoff,
-      );
       setAllVehicleHistory(parsedAll);
-      setVehicleHistory(parsedWindow);
     } catch (err) {
       console.error('[fetchVehicleHistory] failed:', err);
       setAllVehicleHistory([]);
-      setVehicleHistory([]);
     } finally {
       setVLoading(false);
     }
   }, []);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        await fetchHistory(window.limit, window.ms);
-        await fetchVehicles();
-        await fetchVehicleHistory(window.ms);
-      } catch (e) {
-        console.error('[HistoryPage] fetch error', e);
-      }
-    })();
-  }, [
-    windowIdx,
-    window.limit,
-    window.ms,
-    fetchHistory,
-    fetchVehicles,
-    fetchVehicleHistory,
-  ]);
+  const refreshAll = useCallback(async () => {
+    try {
+      await fetchHistory();
+      await fetchVehicles();
+      await fetchVehicleHistory();
+    } catch (e) {
+      console.error('[HistoryPage] fetch error', e);
+    }
+  }, [fetchHistory, fetchVehicles, fetchVehicleHistory]);
 
-  const hotspotSession = useMemo(() => {
+  // Fetch once on mount. Data doesn't need re-fetching when the selected
+  // window/day changes — everything is already pulled in full and just
+  // gets re-filtered below. Use the Refresh button to pull newer data.
+  useEffect(() => {
+    refreshAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Active [start, end] range driving every chart, table, and the CSV export.
+  const activeRange = useMemo(() => {
+    if (customMode) {
+      const start = new Date(`${customDate}T${customStart}:00`);
+      const end = new Date(`${customDate}T${customEnd}:00`);
+      return { start, end };
+    }
+    const end = new Date();
+    const start = new Date(end.getTime() - window.ms);
+    return { start, end };
+  }, [customMode, customDate, customStart, customEnd, window.ms]);
+
+  const rangeValid =
+    !customMode || activeRange.start.getTime() < activeRange.end.getTime();
+
+  const points = useMemo(() => {
+    if (!rangeValid) return [];
+    return allPoints.filter(
+      (p) =>
+        p.timestamp.getTime() >= activeRange.start.getTime() &&
+        p.timestamp.getTime() <= activeRange.end.getTime(),
+    );
+  }, [allPoints, activeRange, rangeValid]);
+
+  const vehicleHistory = useMemo(() => {
+    if (!rangeValid) return [];
+    return allVehicleHistory.filter(
+      (p) =>
+        p.timestamp.getTime() >= activeRange.start.getTime() &&
+        p.timestamp.getTime() <= activeRange.end.getTime(),
+    );
+  }, [allVehicleHistory, activeRange, rangeValid]);
+
+  const hotspotReadings = useMemo(() => {
     const pmReadings: TimestampedPmReading[] = allPoints.map((point) => ({
       timestamp: point.timestamp,
       pm25: point.pm25,
@@ -262,9 +287,32 @@ export default function HistoryPage() {
         },
       }),
     );
-
-    return classifyHotspotSession(pmReadings, vehicleReadings);
+    return { pmReadings, vehicleReadings };
   }, [allPoints, allVehicleHistory]);
+
+  // Two sensitivity checks against the same underlying data. Near-miss
+  // stats (maxElevatedRunLength / maxCriticalRunLength) are identical
+  // between them since they don't depend on the threshold — only the
+  // resulting tier does.
+  const hotspotSession10 = useMemo(
+    () =>
+      classifyHotspotSession(
+        hotspotReadings.pmReadings,
+        hotspotReadings.vehicleReadings,
+        10,
+      ),
+    [hotspotReadings],
+  );
+  const hotspotSession5 = useMemo(
+    () =>
+      classifyHotspotSession(
+        hotspotReadings.pmReadings,
+        hotspotReadings.vehicleReadings,
+        5,
+      ),
+    [hotspotReadings],
+  );
+  const hotspotSession = hotspotSession10;
 
   // Metrics
   const metrics = useMemo(() => {
@@ -330,23 +378,68 @@ export default function HistoryPage() {
   const totalVehicles = Object.values(vehicles).reduce((a, b) => a + b, 0);
 
   const exportCSV = () => {
-    const v = vehicles;
-    const hasVehicles = totalVehicles > 0;
+    const hasVehicles = vehicleHistory.length > 0;
+
+    // For each PM2.5 reading, find the closest vehicle-history reading
+    // at or before that timestamp (vehicleHistory is sorted ascending).
+    const findVehiclesAt = (t: number): VehicleHistoryPoint | null => {
+      let match: VehicleHistoryPoint | null = null;
+      for (const vh of vehicleHistory) {
+        if (vh.timestamp.getTime() <= t) {
+          match = vh;
+        } else {
+          break;
+        }
+      }
+      return match ?? vehicleHistory[0] ?? null;
+    };
+
     const header = hasVehicles
       ? 'Timestamp,PM2.5,Car,Jeep,Truck,Tricycle,Motorcycle,Bus\n'
       : 'Timestamp,PM2.5\n';
     const rows = points
-      .map((p) =>
-        hasVehicles
-          ? `${p.timestamp.toISOString()},${p.pm25},${v.Car},${v.Jeep},${v.Truck},${v.Tricycle},${v.Motorcycle},${v.Bus}`
-          : `${p.timestamp.toISOString()},${p.pm25}`,
-      )
+      .map((p) => {
+        if (!hasVehicles) return `${p.timestamp.toISOString()},${p.pm25}`;
+        const v = findVehiclesAt(p.timestamp.getTime());
+        if (!v) return `${p.timestamp.toISOString()},${p.pm25},0,0,0,0,0,0`;
+        return `${p.timestamp.toISOString()},${p.pm25},${v.Car},${v.Jeep},${v.Truck},${v.Tricycle},${v.Motorcycle},${v.Bus}`;
+      })
       .join('\n');
-    const blob = new Blob([header + rows], { type: 'text/csv' });
+
+    const rangeLabel = customMode
+      ? `${customDate} ${customStart}-${customEnd}`
+      : window.label;
+
+    const summary = [
+      '',
+      '',
+      'Summary',
+      `Range,${rangeLabel}`,
+      `Avg PM2.5,${metrics.avg.toFixed(1)}`,
+      `Max PM2.5,${metrics.max}`,
+      `Min PM2.5,${metrics.min}`,
+      `Spikes,${metrics.spikes}`,
+      `Vehicles,${totalVehicles}`,
+      `Hotspot Tier (10-min),${getHotspotTierLabel(hotspotSession10.hotspotTier)}`,
+      `Hotspot Peak Tier (10-min),${getHotspotTierLabel(hotspotSession10.peakHotspotTier)}`,
+      `Hotspot Tier (5-min),${getHotspotTierLabel(hotspotSession5.hotspotTier)}`,
+      `Hotspot Peak Tier (5-min),${getHotspotTierLabel(hotspotSession5.peakHotspotTier)}`,
+      `Longest Elevated Streak (min),${hotspotSession10.maxElevatedRunLength}`,
+      `Longest Critical Streak (min),${hotspotSession10.maxCriticalRunLength}`,
+      `Traffic Baseline (vehicles/min),${hotspotSession10.sessionMeanVehicleRatePerMinute.toFixed(1)}`,
+      `Readings,${points.length}`,
+    ].join('\n');
+
+    const blob = new Blob([header + rows + '\n' + summary], {
+      type: 'text/csv',
+    });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `pm25-history-${window.label}.csv`;
+    const label = customMode
+      ? `${customDate}_${customStart}-${customEnd}`.replace(/:/g, '')
+      : window.label;
+    a.download = `pm25-history-${label}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -359,12 +452,22 @@ export default function HistoryPage() {
           {TIME_WINDOWS.map((tw, i) => (
             <button
               key={tw.label}
-              className={i === windowIdx ? 'active' : ''}
-              onClick={() => setWindowIdx(i)}
+              className={!customMode && i === windowIdx ? 'active' : ''}
+              onClick={() => {
+                setCustomMode(false);
+                setWindowIdx(i);
+              }}
             >
               {tw.label}
             </button>
           ))}
+          <button
+            className={customMode ? 'active' : ''}
+            onClick={() => setCustomMode(true)}
+          >
+            Custom
+          </button>
+          <button onClick={refreshAll}>Refresh</button>
           <button
             className='export-btn'
             onClick={exportCSV}
@@ -374,6 +477,38 @@ export default function HistoryPage() {
           </button>
         </div>
       </div>
+
+      {customMode && (
+        <div className='custom-range-bar'>
+          <label>
+            Date
+            <input
+              type='date'
+              value={customDate}
+              onChange={(e) => setCustomDate(e.target.value)}
+            />
+          </label>
+          <label>
+            Start
+            <input
+              type='time'
+              value={customStart}
+              onChange={(e) => setCustomStart(e.target.value)}
+            />
+          </label>
+          <label>
+            End
+            <input
+              type='time'
+              value={customEnd}
+              onChange={(e) => setCustomEnd(e.target.value)}
+            />
+          </label>
+          {!rangeValid && (
+            <span className='range-error'>End time must be after start time</span>
+          )}
+        </div>
+      )}
 
       {/* Metrics */}
       <div className='metrics-bar'>
@@ -420,11 +555,60 @@ export default function HistoryPage() {
 
       <p className='hotspot-note'>
         Hotspot tier uses 1-minute vehicle-rate windows, a 5-minute baseline
-        warm-up, and a 10-minute sustained run requirement.
+        warm-up, and a 10-minute sustained run requirement, computed over the
+        full dataset regardless of the selected view range. A gap of more
+        than {HOTSPOT_SESSION_GAP_MINUTES} minutes between readings starts a
+        new session, resetting the baseline and any in-progress streak.
       </p>
+
+      <div className='hotspot-sensitivity'>
+        <h3>Hotspot Sensitivity Check</h3>
+        <div className='hotspot-sensitivity-grid'>
+          <div className='hotspot-sensitivity-col'>
+            <span className='hotspot-sensitivity-label'>10-min sustained</span>
+            <span
+              className='metric-value'
+              style={{
+                color: getHotspotTierColor(hotspotSession10.hotspotTier),
+              }}
+            >
+              {getHotspotTierLabel(hotspotSession10.hotspotTier)}
+            </span>
+            <span className='hotspot-sensitivity-sub'>
+              Peak reached: {getHotspotTierLabel(hotspotSession10.peakHotspotTier)}
+            </span>
+          </div>
+          <div className='hotspot-sensitivity-col'>
+            <span className='hotspot-sensitivity-label'>5-min sustained</span>
+            <span
+              className='metric-value'
+              style={{
+                color: getHotspotTierColor(hotspotSession5.hotspotTier),
+              }}
+            >
+              {getHotspotTierLabel(hotspotSession5.hotspotTier)}
+            </span>
+            <span className='hotspot-sensitivity-sub'>
+              Peak reached: {getHotspotTierLabel(hotspotSession5.peakHotspotTier)}
+            </span>
+          </div>
+          <div className='hotspot-sensitivity-col'>
+            <span className='hotspot-sensitivity-label'>Near misses</span>
+            <span className='metric-value'>
+              {hotspotSession10.maxElevatedRunLength}m elevated
+            </span>
+            <span className='hotspot-sensitivity-sub'>
+              {hotspotSession10.maxCriticalRunLength}m critical (longest
+              qualifying streak observed, threshold met or not)
+            </span>
+          </div>
+        </div>
+      </div>
 
       {loading ? (
         <div className='history-loading'>Loading history...</div>
+      ) : !rangeValid ? (
+        <div className='history-empty'>Fix the date range above.</div>
       ) : points.length === 0 ? (
         <div className='history-empty'>
           No history data for this time window.

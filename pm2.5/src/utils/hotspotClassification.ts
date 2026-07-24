@@ -17,13 +17,32 @@ export interface HotspotWindow {
   vehicleRatePerMinute: number;
   baselineVehicleRatePerMinute: number;
   trafficElevated: boolean;
-  hotspotTier: HotspotTier;
+  pmElevated: boolean;
+  pmCritical: boolean;
+  // Consecutive qualifying-minute streak ENDING at this window, regardless
+  // of whether it has crossed the sustained-window threshold yet. This is
+  // what "near miss" reporting is built from.
+  elevatedRunLength: number;
+  criticalRunLength: number;
+  // True if this window follows a gap large enough to be treated as the
+  // start of a new recording session (baseline/streaks were reset here).
+  isSessionStart: boolean;
 }
 
 export interface HotspotSessionSummary {
+  /** Tier as of the very last evaluated minute — "is a hotspot active right now." */
   hotspotTier: HotspotTier;
+  /** Best tier reached at any point in the dataset — "did a hotspot ever occur." */
+  peakHotspotTier: HotspotTier;
   windows: HotspotWindow[];
+  /** Length of the qualifying streak underlying the CURRENT hotspotTier (0 if 'none'). */
   sustainedWindowCount: number;
+  /** The sustainedWindows threshold this result was computed with. */
+  sustainedWindowsRequired: number;
+  /** Longest elevated-qualifying streak observed anywhere in the dataset, met or not. */
+  maxElevatedRunLength: number;
+  /** Longest critical-qualifying streak observed anywhere in the dataset, met or not. */
+  maxCriticalRunLength: number;
   elevatedTrafficWindowCount: number;
   criticalTrafficWindowCount: number;
   sessionMeanVehicleRatePerMinute: number;
@@ -35,6 +54,13 @@ export const HOTSPOT_WINDOW_MINUTES = 1;
 export const HOTSPOT_WARMUP_WINDOWS = 5;
 export const HOTSPOT_SUSTAINED_WINDOWS = 10;
 export const HOTSPOT_TRAFFIC_MULTIPLIER = 1.5;
+// If the gap between one evaluated minute and the next exceeds this many
+// minutes, treat it as the start of a new recording session: reset the
+// running traffic baseline and any in-progress streak. Without this,
+// analyzing multiple days/sessions together would let a streak "jump"
+// across an overnight (or multi-hour) gap as if it were consecutive, and
+// the baseline would blend unrelated sessions and times of day together.
+export const HOTSPOT_SESSION_GAP_MINUTES = 3;
 
 const minuteKey = (date: Date): number =>
   Math.floor(date.getTime() / (HOTSPOT_WINDOW_MINUTES * 60 * 1000)) *
@@ -129,9 +155,21 @@ export const isElevatedTraffic = (
   );
 };
 
+/**
+ * Classify a dataset of PM2.5 + vehicle readings into hotspot windows.
+ *
+ * @param sustainedWindows how many consecutive qualifying minutes are
+ *   required before a streak counts as a hotspot. Defaults to
+ *   HOTSPOT_SUSTAINED_WINDOWS (10). Pass a different value (e.g. 5) to run
+ *   a sensitivity check against the same underlying data — near-miss stats
+ *   (maxElevatedRunLength / maxCriticalRunLength) are threshold-independent
+ *   and will be identical across calls; only hotspotTier/peakHotspotTier/
+ *   sustainedWindowCount change with the threshold.
+ */
 export const classifyHotspotSession = (
   pmReadings: TimestampedPmReading[],
   vehicleReadings: TimestampedVehicleReading[],
+  sustainedWindows: number = HOTSPOT_SUSTAINED_WINDOWS,
 ): HotspotSessionSummary => {
   const pmWindows = buildPmWindows(pmReadings);
   const vehicleWindows = buildVehicleWindows(vehicleReadings);
@@ -141,7 +179,12 @@ export const classifyHotspotSession = (
     vehicleByMinute.set(window.minuteStart, window);
   });
 
-  const alignedWindows: HotspotWindow[] = [];
+  const alignedWindows: Array<{
+    minuteStart: number;
+    minuteEnd: number;
+    pm25Average: number;
+    vehicleRatePerMinute: number;
+  }> = [];
 
   pmWindows.forEach((pmWindow) => {
     const vehicleWindow = vehicleByMinute.get(pmWindow.minuteStart);
@@ -164,15 +207,10 @@ export const classifyHotspotSession = (
     );
 
     alignedWindows.push({
-      minuteStart: new Date(pmWindow.minuteStart),
-      minuteEnd: new Date(
-        pmWindow.minuteStart + HOTSPOT_WINDOW_MINUTES * 60 * 1000,
-      ),
+      minuteStart: pmWindow.minuteStart,
+      minuteEnd: pmWindow.minuteStart + HOTSPOT_WINDOW_MINUTES * 60 * 1000,
       pm25Average,
       vehicleRatePerMinute,
-      baselineVehicleRatePerMinute: 0,
-      trafficElevated: false,
-      hotspotTier: 'none',
     });
   });
 
@@ -182,10 +220,30 @@ export const classifyHotspotSession = (
   let criticalTrafficWindowCount = 0;
   let elevatedRun = 0;
   let criticalRun = 0;
+  let maxElevatedRunLength = 0;
+  let maxCriticalRunLength = 0;
   let latestHotspotTier: HotspotTier = 'none';
+  let peakHotspotTier: HotspotTier = 'none';
   let sustainedWindowCount = 0;
+  let previousMinuteEnd: number | null = null;
 
-  const windows = alignedWindows.map((window) => {
+  const windows: HotspotWindow[] = alignedWindows.map((window) => {
+    const gapMinutes =
+      previousMinuteEnd === null
+        ? 0
+        : (window.minuteStart - previousMinuteEnd) / (60 * 1000);
+    const isSessionStart =
+      previousMinuteEnd === null || gapMinutes > HOTSPOT_SESSION_GAP_MINUTES;
+
+    if (isSessionStart && previousMinuteEnd !== null) {
+      // New recording session detected (e.g. a different day). Don't let
+      // the traffic baseline or an in-progress streak bleed across the gap.
+      runningMeanSum = 0;
+      runningMeanCount = 0;
+      elevatedRun = 0;
+      criticalRun = 0;
+    }
+
     const sessionMeanVehicleRatePerMinute =
       runningMeanCount > 0 ? runningMeanSum / runningMeanCount : 0;
     const trafficElevated =
@@ -213,34 +271,53 @@ export const classifyHotspotSession = (
       criticalRun = 0;
     }
 
-    if (criticalRun >= HOTSPOT_SUSTAINED_WINDOWS) {
+    maxElevatedRunLength = Math.max(maxElevatedRunLength, elevatedRun);
+    maxCriticalRunLength = Math.max(maxCriticalRunLength, criticalRun);
+
+    if (criticalRun >= sustainedWindows) {
       latestHotspotTier = 'critical';
       sustainedWindowCount = criticalRun;
-    } else if (elevatedRun >= HOTSPOT_SUSTAINED_WINDOWS) {
+      peakHotspotTier = 'critical';
+    } else if (elevatedRun >= sustainedWindows) {
       latestHotspotTier = 'elevated';
       sustainedWindowCount = elevatedRun;
+      if (peakHotspotTier !== 'critical') {
+        peakHotspotTier = 'elevated';
+      }
     } else {
       latestHotspotTier = 'none';
       sustainedWindowCount = 0;
     }
 
     const evaluatedWindow: HotspotWindow = {
-      ...window,
+      minuteStart: new Date(window.minuteStart),
+      minuteEnd: new Date(window.minuteEnd),
+      pm25Average: window.pm25Average,
+      vehicleRatePerMinute: window.vehicleRatePerMinute,
       baselineVehicleRatePerMinute: sessionMeanVehicleRatePerMinute,
       trafficElevated,
-      hotspotTier: latestHotspotTier,
+      pmElevated,
+      pmCritical,
+      elevatedRunLength: elevatedRun,
+      criticalRunLength: criticalRun,
+      isSessionStart,
     };
 
     runningMeanSum += window.vehicleRatePerMinute;
     runningMeanCount += 1;
+    previousMinuteEnd = window.minuteEnd;
 
     return evaluatedWindow;
   });
 
   return {
     hotspotTier: latestHotspotTier,
+    peakHotspotTier,
     windows,
     sustainedWindowCount,
+    sustainedWindowsRequired: sustainedWindows,
+    maxElevatedRunLength,
+    maxCriticalRunLength,
     elevatedTrafficWindowCount,
     criticalTrafficWindowCount,
     sessionMeanVehicleRatePerMinute:
