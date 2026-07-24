@@ -395,8 +395,16 @@ export default function HistoryPage() {
     };
 
     const header = hasVehicles
-      ? 'Timestamp,PM2.5,Car,Jeep,Truck,Tricycle,Motorcycle,Bus\n'
-      : 'Timestamp,PM2.5\n';
+      ? 'Timestamp,PM2.5,Hotspot Tier,Car,Jeep,Truck,Tricycle,Motorcycle,Bus\n'
+      : 'Timestamp,PM2.5,Hotspot Tier\n';
+
+    // Time-align vehicle counts to each PM2.5 reading instead of reusing one
+    // fixed snapshot for every row. `points` and `vehicleHistory` are both
+    // sorted ascending by timestamp, so a single forward-advancing pointer
+    // finds, for each PM reading, the most recent vehicle-history entry at
+    // or before that reading's timestamp (an "as-of" match) — matching how
+    // the Pi actually reports vehicle state: valid until its next push.
+    let vIdx = 0;
     const rows = points
       .map((p) => {
         if (!hasVehicles) return `${p.timestamp.toISOString()},${p.pm25}`;
@@ -696,45 +704,49 @@ export default function HistoryPage() {
           {/* Vehicle Counts Over Time */}
           <div className='chart-section'>
             <h3>Vehicle Counts Over Time</h3>
-            {vLoading ? (
-              <div className='history-loading'>Loading vehicle history...</div>
-            ) : vehicleHistory.length === 0 ? (
-              <div className='history-empty'>
-                No vehicle history data for this time window.
-              </div>
-            ) : (
-              <ResponsiveContainer width='100%' height={280}>
-                <LineChart data={vehicleChartData}>
-                  <CartesianGrid
-                    strokeDasharray='3 3'
-                    stroke='rgba(255,255,255,0.06)'
-                  />
-                  <XAxis
-                    dataKey='time'
-                    tick={{ fontSize: 10, fill: '#5a6978' }}
-                  />
-                  <YAxis tick={{ fontSize: 10, fill: '#5a6978' }} />
-                  <Tooltip
-                    contentStyle={{
-                      background: '#161b22',
-                      border: '1px solid rgba(0,217,255,0.2)',
-                      borderRadius: 6,
-                    }}
-                  />
-                  <Legend wrapperStyle={{ fontSize: 10 }} />
-                  {Object.keys(VEHICLE_COLORS).map((type) => (
-                    <Line
-                      key={type}
-                      type='monotone'
-                      dataKey={type}
-                      stroke={VEHICLE_COLORS[type]}
-                      strokeWidth={1.5}
-                      dot={false}
+            <div className='chart-frame'>
+              {vLoading ? (
+                <div className='history-loading'>
+                  Loading vehicle history...
+                </div>
+              ) : vehicleHistory.length === 0 ? (
+                <div className='history-empty'>
+                  No vehicle history data for this time window.
+                </div>
+              ) : (
+                <ResponsiveContainer width='100%' height={280}>
+                  <LineChart data={vehicleChartData}>
+                    <CartesianGrid
+                      strokeDasharray='3 3'
+                      stroke='rgba(255,255,255,0.06)'
                     />
-                  ))}
-                </LineChart>
-              </ResponsiveContainer>
-            )}
+                    <XAxis
+                      dataKey='time'
+                      tick={{ fontSize: 10, fill: '#5a6978' }}
+                    />
+                    <YAxis tick={{ fontSize: 10, fill: '#5a6978' }} />
+                    <Tooltip
+                      contentStyle={{
+                        background: '#161b22',
+                        border: '1px solid rgba(0,217,255,0.2)',
+                        borderRadius: 6,
+                      }}
+                    />
+                    <Legend wrapperStyle={{ fontSize: 10 }} />
+                    {Object.keys(VEHICLE_COLORS).map((type) => (
+                      <Line
+                        key={type}
+                        type='monotone'
+                        dataKey={type}
+                        stroke={VEHICLE_COLORS[type]}
+                        strokeWidth={1.5}
+                        dot={false}
+                      />
+                    ))}
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+            </div>
           </div>
 
           {/* Reading Table */}
