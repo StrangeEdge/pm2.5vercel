@@ -1,8 +1,11 @@
 /**
- * Firebase Data Integration Guide
- * 
- * This file shows examples of how to store sensor readings and vehicle detections
- * in Firebase Firestore from your backend services.
+ * BACKEND REFERENCE CODE — not used by the dashboard.
+ *
+ * This file documents how a backend service (Node.js or Python) would
+ * write sensor data to Firestore. The dashboard reads from RTDB; these
+ * helpers exist as a reference for building a future backend server.
+ *
+ * See system.md for the intended architecture.
  */
 
 import { 

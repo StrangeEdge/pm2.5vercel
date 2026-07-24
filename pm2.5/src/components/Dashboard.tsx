@@ -1,79 +1,102 @@
-import { useState, useEffect } from 'react';
-import type { SensorReading, Vehicle } from '../data/dummyData';
+import { useState, useEffect, useRef } from 'react';
+import type { SensorReading } from '../data/dummyData';
 import StatsHeader from './StatsHeader';
 import MapComponent from './Map';
 import LeftSidebar from './LeftSidebar';
 import RightSidebar from './RightSidebar';
-import { getRealtimeData, subscribeToRealtimeData } from '../utils/realtimeDatabaseHelpers';
+import { getRealtimeData } from '../utils/realtimeDatabaseHelpers';
 import './Dashboard.css';
+
+const STALE_DATA_MS = 5 * 60 * 1000; // 5 minutes
+export const SENSOR_OFFLINE_MS = STALE_DATA_MS;
 
 const Dashboard: React.FC = () => {
   const [sensorReadings, setSensorReadings] = useState<SensorReading[]>([]);
-  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [loading, setLoading] = useState(true);
   const [isLive, setIsLive] = useState(true);
   const [isPaused, setIsPaused] = useState(false);
-  const [selectedSensor, setSelectedSensor] = useState<SensorReading | null>(null);
+  const [isStale, setIsStale] = useState(false);
+  const [selectedSensor, setSelectedSensor] = useState<SensorReading | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
+  const [offlineSensorIds, setOfflineSensorIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const mountedRef = useRef(true);
+  const fetchingRef = useRef(false);
 
-  // Set up real-time data subscription
-  useEffect(() => {
-    if (isPaused) {
-      setLoading(false);
-      return;
-    }
+  const applyData = (data: { sensorReadings: SensorReading[] }) => {
+    setSensorReadings(data.sensorReadings);
 
-    // Initial fetch
-    const initialFetch = async () => {
-      try {
-        const data = await getRealtimeData();
-        setSensorReadings(data.sensorReadings);
-        setVehicles(data.vehicles);
-        setError(null);
-        setIsLive(true);
-      } catch (err) {
-        console.error('Error fetching initial data:', err);
-        setError('Failed to connect to Firebase');
-        setIsLive(false);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    initialFetch();
-
-    // Subscribe to real-time updates
-    const unsubscribe = subscribeToRealtimeData((data) => {
-      setSensorReadings(data.sensorReadings);
-      setVehicles(data.vehicles);
-      setIsLive(true);
-      setError(null);
+    setSelectedSensor((prev) => {
+      if (data.sensorReadings.length === 0) return null;
+      if (!prev) return data.sensorReadings[0];
+      const updated = data.sensorReadings.find((r) => r.id === prev.id);
+      return updated ?? data.sensorReadings[0];
     });
 
+    if (data.sensorReadings.length > 0) {
+      const latest = data.sensorReadings.reduce((a, b) =>
+        a.timestamp > b.timestamp ? a : b,
+      );
+      const now = Date.now();
+      setIsStale(now - latest.timestamp.getTime() > STALE_DATA_MS);
+
+      const offline = new Set<string>();
+      data.sensorReadings.forEach((r) => {
+        if (now - r.timestamp.getTime() > SENSOR_OFFLINE_MS) {
+          offline.add(r.id);
+        }
+      });
+      setOfflineSensorIds(offline);
+    } else {
+      setIsStale(true);
+      setOfflineSensorIds(new Set());
+    }
+
+    setError(null);
+    setIsLive(true);
+  };
+
+  useEffect(() => {
+    if (isPaused) return;
+
+    mountedRef.current = true;
+
+    const refresh = () => {
+      if (fetchingRef.current) return; // skip if previous request still in flight
+      fetchingRef.current = true;
+
+      getRealtimeData()
+        .then((data) => {
+          if (mountedRef.current) applyData(data);
+        })
+        .catch(() => {
+          if (mountedRef.current) {
+            setError('Failed to connect to Firebase');
+            setIsLive(false);
+          }
+        })
+        .finally(() => {
+          if (mountedRef.current) {
+            setLoading(false);
+            fetchingRef.current = false;
+          }
+        });
+    };
+
+    refresh();
+    const interval = setInterval(refresh, 3000);
+
     return () => {
-      unsubscribe();
+      mountedRef.current = false;
+      clearInterval(interval);
     };
   }, [isPaused]);
 
-  // Auto-select first sensor when data loads
-  useEffect(() => {
-    if (sensorReadings.length > 0 && !selectedSensor) {
-      setSelectedSensor(sensorReadings[0]);
-    }
-  }, [sensorReadings, selectedSensor]);
-
-  // Keep selected sensor in sync with live updates
-  useEffect(() => {
-    if (!selectedSensor) return;
-
-    const updatedSensor = sensorReadings.find((reading) => reading.id === selectedSensor.id);
-    if (updatedSensor && updatedSensor !== selectedSensor) {
-      setSelectedSensor(updatedSensor);
-    }
-  }, [sensorReadings, selectedSensor]);
-
   const handleTogglePause = () => {
-    setIsPaused(!isPaused);
+    setIsPaused((prev) => !prev);
   };
 
   const handleSelectSensor = (sensor: SensorReading) => {
@@ -82,8 +105,8 @@ const Dashboard: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="dashboard-loading">
-        <div className="spinner"></div>
+      <div className='dashboard-loading'>
+        <div className='spinner'></div>
         <p>Loading data from Firebase Realtime Database...</p>
       </div>
     );
@@ -91,8 +114,7 @@ const Dashboard: React.FC = () => {
 
   if (error) {
     return (
-      <div className="dashboard-loading">
-        <div className="error-icon">⚠️</div>
+      <div className='dashboard-loading'>
         <p>Error: {error}</p>
         <p style={{ fontSize: '12px', marginTop: '10px' }}>
           Make sure Firebase Realtime Database is properly configured.
@@ -101,10 +123,9 @@ const Dashboard: React.FC = () => {
     );
   }
 
-  if (sensorReadings.length === 0 && vehicles.length === 0) {
+  if (sensorReadings.length === 0) {
     return (
-      <div className="dashboard-loading">
-        <div className="info-icon">ℹ️</div>
+      <div className='dashboard-loading'>
         <p>No data available from Firebase</p>
         <p style={{ fontSize: '12px', marginTop: '10px' }}>
           Make sure data exists in your Realtime Database at path: /pm25_data
@@ -113,42 +134,51 @@ const Dashboard: React.FC = () => {
     );
   }
 
+  const elevatedHotspots = sensorReadings.filter(
+    (reading) => reading.hotspotTier === 'elevated',
+  ).length;
+  const criticalHotspots = sensorReadings.filter(
+    (reading) => reading.hotspotTier === 'critical',
+  ).length;
+
   return (
-    <div className="dashboard">
+    <div className='dashboard'>
+      {isStale && (
+        <div className='stale-banner'>
+          No recent readings from sensors. Last reading was over 5 minutes ago.
+        </div>
+      )}
+
       <StatsHeader
         sensorReadings={sensorReadings}
-        activeNodes={sensorReadings.length}
+        elevatedHotspots={elevatedHotspots}
+        criticalHotspots={criticalHotspots}
         isLive={isLive}
         isPaused={isPaused}
         onTogglePause={handleTogglePause}
       />
 
-      <div className="dashboard-content">
-        <div className="left-panel">
+      <div className='dashboard-content'>
+        <div className='left-panel'>
           <LeftSidebar
             sensorReadings={sensorReadings}
             selectedSensor={selectedSensor}
             onSelectSensor={handleSelectSensor}
+            offlineSensorIds={offlineSensorIds}
           />
         </div>
 
-        <div className="center-panel">
-          {sensorReadings.length > 0 || vehicles.length > 0 ? (
-            <MapComponent
-              sensorReadings={sensorReadings}
-              selectedSensor={selectedSensor}
-            />
-          ) : (
-            <div className="no-data-map">
-              <p>No data available</p>
-            </div>
-          )}
+        <div className='center-panel'>
+          <MapComponent
+            sensorReadings={sensorReadings}
+            selectedSensor={selectedSensor}
+            offlineSensorIds={offlineSensorIds}
+          />
         </div>
 
-        <div className="right-panel">
+        <div className='right-panel'>
           <RightSidebar
             sensorReadings={sensorReadings}
-            vehicles={vehicles}
             selectedSensor={selectedSensor}
           />
         </div>
