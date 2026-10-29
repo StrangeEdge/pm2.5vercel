@@ -19,6 +19,14 @@ import {
 } from '../data/dummyData';
 import './Map.css';
 
+// CARTO basemap API key (from .env). Vite only exposes VITE_-prefixed vars
+// to the client, so this reads VITE_CARTO_API_KEY.
+const CARTO_API_KEY: string | undefined =
+  import.meta.env.VITE_CARTO_API_KEY;
+const TILE_URL = CARTO_API_KEY
+  ? `https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=${CARTO_API_KEY}`
+  : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+
 interface MapProps {
   sensorReadings: SensorReading[];
   selectedSensor: SensorReading | null;
@@ -99,7 +107,7 @@ const MapComponent: React.FC<MapProps> = ({
 
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
-          url='https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+          url={TILE_URL}
           subdomains={['a', 'b', 'c', 'd']}
           crossOrigin=''
         />

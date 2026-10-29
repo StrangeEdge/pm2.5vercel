@@ -8,7 +8,8 @@ import type { SensorReading, VehicleCounts } from '../data/dummyData';
 import { VEHICLE_TYPES, emptyVehicleCounts } from '../data/dummyData';
 import { getAuthToken } from '../config/firebaseConfig';
 import {
-  classifyHotspotSession,
+  detectPmEvents,
+  getCurrentHotspotTier,
   type TimestampedPmReading,
   type TimestampedVehicleReading,
 } from './hotspotClassification';
@@ -218,9 +219,22 @@ export const getRealtimeData = async () => {
           ...toVehicleHistory(vehicleHistoryRaw),
         ]);
 
-        const hotspotSummary = classifyHotspotSession(
-          pmHistory,
-          vehicleHistory,
+        // detectPmEvents() returns the full list of discrete PM2.5 events,
+        // each already classified as a traffic-related hotspot or a plain
+        // pollution event (see PmEvent.isHotspot / hotspotLabel in
+        // hotspotClassification.ts) based on its correlation with vehicle
+        // activity. getCurrentHotspotTier() collapses that list down to a
+        // single 'none' | 'elevated' | 'critical' value for this reading,
+        // for display contexts (map pins, dashboard cards) that need one
+        // summary value per sensor rather than the full event list.
+        const eventAnalysis = detectPmEvents(pmHistory, vehicleHistory);
+        const hotspotTier = getCurrentHotspotTier(
+          eventAnalysis.events,
+          pmHistory.length > 0
+            ? pmHistory.reduce((latest, r) =>
+                r.timestamp > latest.timestamp ? r : latest,
+              ).timestamp
+            : timestamp,
         );
 
         const reading: SensorReading = {
@@ -237,7 +251,7 @@ export const getRealtimeData = async () => {
           },
           timestamp,
           status: getStatusFromPM25(pm25),
-          hotspotTier: hotspotSummary.hotspotTier,
+          hotspotTier,
           vehicles: vehicleCounts,
         };
 

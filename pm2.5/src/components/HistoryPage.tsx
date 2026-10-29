@@ -13,13 +13,25 @@ import {
 import './HistoryPage.css';
 import { getAuthToken } from '../config/firebaseConfig';
 import {
-  classifyHotspotSession,
-  HOTSPOT_SESSION_GAP_MINUTES,
+  detectPmEvents,
+  sumVehiclesResetAware,
+  getCorrelationColor,
+  getCorrelationLabel,
+  getVehicleDataQualityLabel,
+  PM25_ELEVATED_THRESHOLD,
+  EVENT_CLOSE_GAP_MINUTES,
+  EVENT_MIN_DURATION_MINUTES,
+  CORRELATION_MIN_SAMPLE_SIZE,
+  SESSION_GAP_MINUTES,
   type TimestampedPmReading,
   type TimestampedVehicleReading,
+  type PmEvent,
 } from '../utils/hotspotClassification';
-import { getHotspotTierColor, getHotspotTierLabel } from '../data/dummyData';
-
+import {
+  buildXlsxBlob,
+  type XlsxSheet,
+  type XlsxCell,
+} from '../utils/xlsxExport';
 const RTDB_URL = import.meta.env.VITE_RTDB_URL;
 
 type HistoryPoint = { timestamp: Date; pm25: number };
@@ -34,15 +46,6 @@ type VehicleHistoryPoint = {
   Bus: number;
 };
 
-interface VehicleCounts {
-  Car: number;
-  Jeep: number;
-  Truck: number;
-  Tricycle: number;
-  Motorcycle: number;
-  Bus: number;
-}
-
 const TIME_WINDOWS = [
   { label: '5m', ms: 5 * 60 * 1000 },
   { label: '30m', ms: 30 * 60 * 1000 },
@@ -52,15 +55,6 @@ const TIME_WINDOWS = [
   { label: '24h', ms: 24 * 60 * 60 * 1000 },
   { label: '1w', ms: 7 * 24 * 60 * 60 * 1000 },
 ];
-
-const EMPTY_VEHICLES: VehicleCounts = {
-  Car: 0,
-  Jeep: 0,
-  Truck: 0,
-  Tricycle: 0,
-  Motorcycle: 0,
-  Bus: 0,
-};
 
 const VEHICLE_COLORS: Record<string, string> = {
   Car: '#3b82f6',
@@ -72,11 +66,63 @@ const VEHICLE_COLORS: Record<string, string> = {
 };
 
 function todayISODate(): string {
-  const d = new Date();
+  return localDateKey(new Date());
+}
+
+function totalVehiclesAtPoint(p: VehicleHistoryPoint): number {
+  return p.Car + p.Jeep + p.Truck + p.Tricycle + p.Motorcycle + p.Bus;
+}
+
+const SESSION_GAP_MS = SESSION_GAP_MINUTES * 60 * 1000;
+
+function localDateKey(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+function formatLocal(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${localDateKey(d)} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function formatTimeOfDay(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+// Continuous runs of readings; a gap longer than SESSION_GAP_MS starts a new
+// session so interrupted recordings aren't stitched together.
+function splitIntoSessions<T extends { timestamp: Date }>(
+  points: T[],
+  gapMs: number,
+): T[][] {
+  const sessions: T[][] = [];
+  let current: T[] = [];
+  for (let i = 0; i < points.length; i++) {
+    if (
+      current.length > 0 &&
+      points[i].timestamp.getTime() - points[i - 1].timestamp.getTime() > gapMs
+    ) {
+      sessions.push(current);
+      current = [];
+    }
+    current.push(points[i]);
+  }
+  if (current.length > 0) sessions.push(current);
+  return sessions;
+}
+
+// Session header label for an XLSX export block.
+function sessionHeader(
+  label: string,
+  session: { timestamp: Date }[],
+): string {
+  const start = session[0].timestamp;
+  const end = session[session.length - 1].timestamp;
+  const mins = Math.round((end.getTime() - start.getTime()) / 60000);
+  return `${label} — ${formatTimeOfDay(start)} to ${formatTimeOfDay(end)} (${mins} min, ${session.length} readings)`;
 }
 
 export default function HistoryPage() {
@@ -91,7 +137,6 @@ export default function HistoryPage() {
   const [allVehicleHistory, setAllVehicleHistory] = useState<
     VehicleHistoryPoint[]
   >([]);
-  const [vehicles, setVehicles] = useState<VehicleCounts>(EMPTY_VEHICLES);
 
   const [loading, setLoading] = useState(true);
   const [vLoading, setVLoading] = useState(true);
@@ -117,10 +162,20 @@ export default function HistoryPage() {
       for (const key of Object.keys(raw)) {
         const d = raw[key];
         if (!d || typeof d !== 'object') continue;
-        const pm = d.pm25 ?? d.pm2_5 ?? d.value;
+        // Accept numeric strings (e.g. "76") and epoch-millis timestamps as
+        // well as plain numbers / ISO strings — strict typing here silently
+        // dropped readings that had been serialized differently, leaving holes
+        // in the PM2.5 history (e.g. the tail of a session).
+        const pm = Number(d.pm25 ?? d.pm2_5 ?? d.value);
         const ts = d.timestamp;
-        if (typeof pm !== 'number' || typeof ts !== 'string') continue;
-        parsedAll.push({ pm25: pm, timestamp: new Date(ts) });
+        const t =
+          typeof ts === 'number'
+            ? new Date(ts)
+            : typeof ts === 'string' && ts.trim() !== ''
+              ? new Date(ts)
+              : null;
+        if (!Number.isFinite(pm) || !t || isNaN(t.getTime())) continue;
+        parsedAll.push({ pm25: pm, timestamp: t });
       }
       parsedAll.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
       setAllPoints(parsedAll);
@@ -129,29 +184,6 @@ export default function HistoryPage() {
       setAllPoints([]);
     } finally {
       setLoading(false);
-    }
-  }, []);
-
-  const fetchVehicles = useCallback(async () => {
-    try {
-      const token = await getAuthToken();
-      const resp = await fetch(
-        `${RTDB_URL}/pm25_data/esp32-sensor-01/vehicles.json?auth=${token}`,
-      );
-      if (!resp.ok) return;
-      const raw = await resp.json();
-      if (raw && typeof raw === 'object') {
-        setVehicles({
-          Car: Number(raw.Car) || 0,
-          Jeep: Number(raw.Jeep) || 0,
-          Truck: Number(raw.Truck) || 0,
-          Tricycle: Number(raw.Tricycle) || 0,
-          Motorcycle: Number(raw.Motorcycle) || 0,
-          Bus: Number(raw.Bus) || 0,
-        });
-      }
-    } catch (err) {
-      console.error('[fetchVehicles] failed:', err);
     }
   }, []);
 
@@ -221,12 +253,11 @@ export default function HistoryPage() {
   const refreshAll = useCallback(async () => {
     try {
       await fetchHistory();
-      await fetchVehicles();
       await fetchVehicleHistory();
     } catch (e) {
       console.error('[HistoryPage] fetch error', e);
     }
-  }, [fetchHistory, fetchVehicles, fetchVehicleHistory]);
+  }, [fetchHistory, fetchVehicleHistory]);
 
   // Fetch once on mount. Data doesn't need re-fetching when the selected
   // window/day changes — everything is already pulled in full and just
@@ -269,7 +300,11 @@ export default function HistoryPage() {
     );
   }, [allVehicleHistory, activeRange, rangeValid]);
 
-  const hotspotReadings = useMemo(() => {
+  // ── PM2.5 event detection + Pearson/Spearman correlation, computed over
+  //    the FULL dataset (not just the selected view window) so an event
+  //    that straddles the edge of the currently-selected range still gets
+  //    evaluated with its complete data. ──
+  const eventAnalysis = useMemo(() => {
     const pmReadings: TimestampedPmReading[] = allPoints.map((point) => ({
       timestamp: point.timestamp,
       pm25: point.pm25,
@@ -287,32 +322,19 @@ export default function HistoryPage() {
         },
       }),
     );
-    return { pmReadings, vehicleReadings };
+    return detectPmEvents(pmReadings, vehicleReadings);
   }, [allPoints, allVehicleHistory]);
 
-  // Two sensitivity checks against the same underlying data. Near-miss
-  // stats (maxElevatedRunLength / maxCriticalRunLength) are identical
-  // between them since they don't depend on the threshold — only the
-  // resulting tier does.
-  const hotspotSession10 = useMemo(
-    () =>
-      classifyHotspotSession(
-        hotspotReadings.pmReadings,
-        hotspotReadings.vehicleReadings,
-        10,
-      ),
-    [hotspotReadings],
-  );
-  const hotspotSession5 = useMemo(
-    () =>
-      classifyHotspotSession(
-        hotspotReadings.pmReadings,
-        hotspotReadings.vehicleReadings,
-        5,
-      ),
-    [hotspotReadings],
-  );
-  const hotspotSession = hotspotSession10;
+  // Only events that overlap the currently-selected view range are shown
+  // in the table below, even though they were computed against full data.
+  const visibleEvents = useMemo(() => {
+    if (!rangeValid) return [];
+    return eventAnalysis.events.filter(
+      (e) =>
+        e.endTime.getTime() >= activeRange.start.getTime() &&
+        e.startTime.getTime() <= activeRange.end.getTime(),
+    );
+  }, [eventAnalysis, activeRange, rangeValid]);
 
   // Metrics
   const metrics = useMemo(() => {
@@ -323,6 +345,7 @@ export default function HistoryPage() {
         min: 0,
         spikes: 0,
         spikePoints: new Set<number>(),
+        threshold: 0,
       };
     const vals = points.map((p) => p.pm25);
     const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
@@ -375,80 +398,380 @@ export default function HistoryPage() {
     [vehicleHistory],
   );
 
-  const totalVehicles = Object.values(vehicles).reduce((a, b) => a + b, 0);
+  // Reset-aware total vehicles counted within the SELECTED range — replaces
+  // the old approach of reading a single live snapshot node, which ignored
+  // the selected date range entirely and silently undercounted across any
+  // Pi restart within the window.
+  const totalVehicles = useMemo(
+    () =>
+      sumVehiclesResetAware(
+        vehicleHistory.map((p) => ({
+          t: p.timestamp.getTime(),
+          total: totalVehiclesAtPoint(p),
+        })),
+      ),
+    [vehicleHistory],
+  );
 
-  const exportCSV = () => {
-    const hasVehicles = vehicleHistory.length > 0;
+  const formatR = (r: number | null) => (r === null ? '—' : r.toFixed(2));
 
-    // For each PM2.5 reading, find the closest vehicle-history reading
-    // at or before that timestamp (vehicleHistory is sorted ascending).
-    const findVehiclesAt = (t: number): VehicleHistoryPoint | null => {
-      let match: VehicleHistoryPoint | null = null;
-      for (const vh of vehicleHistory) {
-        if (vh.timestamp.getTime() <= t) {
-          match = vh;
-        } else {
-          break;
+  // ── Shared CSV builder. Takes explicit datasets so it can be used both
+  //    for the range-filtered export and the full-history export without
+  //    duplicating the row/summary-building logic. ──
+  const buildCsv = useCallback(
+    (
+      rangeLabel: string,
+      pmPoints: HistoryPoint[],
+      vHistory: VehicleHistoryPoint[],
+      events: PmEvent[],
+    ): string => {
+      const hasVehicles = vHistory.length > 0;
+
+      // For each PM2.5 reading, find the closest vehicle-history reading
+      // at or before that timestamp (vHistory is sorted ascending). Only
+      // pairs when the reading is recent — attaching counters from hours
+      // earlier (or from the future via a fallback) over-reports traffic.
+      const findVehiclesAt = (t: number): VehicleHistoryPoint | null => {
+        let match: VehicleHistoryPoint | null = null;
+        for (const vh of vHistory) {
+          if (vh.timestamp.getTime() <= t) {
+            match = vh;
+          } else {
+            break;
+          }
         }
-      }
-      return match ?? vehicleHistory[0] ?? null;
-    };
+        return match && t - match.timestamp.getTime() <= SESSION_GAP_MS
+          ? match
+          : null;
+      };
 
-    const header = hasVehicles
-      ? 'Timestamp,PM2.5,Hotspot Tier,Car,Jeep,Truck,Tricycle,Motorcycle,Bus\n'
-      : 'Timestamp,PM2.5,Hotspot Tier\n';
+      const header = hasVehicles
+        ? 'Timestamp,PM2.5,Car,Jeep,Truck,Tricycle,Motorcycle,Bus\n'
+        : 'Timestamp,PM2.5\n';
 
-    // Time-align vehicle counts to each PM2.5 reading instead of reusing one
-    // fixed snapshot for every row. `points` and `vehicleHistory` are both
-    // sorted ascending by timestamp, so a single forward-advancing pointer
-    // finds, for each PM reading, the most recent vehicle-history entry at
-    // or before that reading's timestamp (an "as-of" match) — matching how
-    // the Pi actually reports vehicle state: valid until its next push.
-    const rows = points
-      .map((p) => {
-        if (!hasVehicles) return `${p.timestamp.toISOString()},${p.pm25}`;
-        const v = findVehiclesAt(p.timestamp.getTime());
-        if (!v) return `${p.timestamp.toISOString()},${p.pm25},0,0,0,0,0,0`;
-        return `${p.timestamp.toISOString()},${p.pm25},${v.Car},${v.Jeep},${v.Truck},${v.Tricycle},${v.Motorcycle},${v.Bus}`;
-      })
-      .join('\n');
+      const rows = pmPoints
+        .map((p) => {
+          if (!hasVehicles) return `${p.timestamp.toISOString()},${p.pm25}`;
+          const v = findVehiclesAt(p.timestamp.getTime());
+          if (!v) return `${p.timestamp.toISOString()},${p.pm25},0,0,0,0,0,0`;
+          return `${p.timestamp.toISOString()},${p.pm25},${v.Car},${v.Jeep},${v.Truck},${v.Tricycle},${v.Motorcycle},${v.Bus}`;
+        })
+        .join('\n');
 
-    const rangeLabel = customMode
-      ? `${customDate} ${customStart}-${customEnd}`
-      : window.label;
+      const totalV = sumVehiclesResetAware(
+        vHistory.map((p) => ({
+          t: p.timestamp.getTime(),
+          total: totalVehiclesAtPoint(p),
+        })),
+      );
 
-    const summary = [
-      '',
-      '',
-      'Summary',
-      `Range,${rangeLabel}`,
-      `Avg PM2.5,${metrics.avg.toFixed(1)}`,
-      `Max PM2.5,${metrics.max}`,
-      `Min PM2.5,${metrics.min}`,
-      `Spikes,${metrics.spikes}`,
-      `Vehicles,${totalVehicles}`,
-      `Hotspot Tier (10-min),${getHotspotTierLabel(hotspotSession10.hotspotTier)}`,
-      `Hotspot Peak Tier (10-min),${getHotspotTierLabel(hotspotSession10.peakHotspotTier)}`,
-      `Hotspot Tier (5-min),${getHotspotTierLabel(hotspotSession5.hotspotTier)}`,
-      `Hotspot Peak Tier (5-min),${getHotspotTierLabel(hotspotSession5.peakHotspotTier)}`,
-      `Longest Elevated Streak (min),${hotspotSession10.maxElevatedRunLength}`,
-      `Longest Critical Streak (min),${hotspotSession10.maxCriticalRunLength}`,
-      `Traffic Baseline (vehicles/min),${hotspotSession10.sessionMeanVehicleRatePerMinute.toFixed(1)}`,
-      `Readings,${points.length}`,
-    ].join('\n');
+      const vals = pmPoints.map((p) => p.pm25);
+      const avg = vals.length
+        ? vals.reduce((a, b) => a + b, 0) / vals.length
+        : 0;
+      const max = vals.length ? Math.max(...vals) : 0;
+      const min = vals.length ? Math.min(...vals) : 0;
+      const threshold = Math.max(avg * 2, 75);
+      const spikes = vals.filter((v) => v >= threshold).length;
 
-    const blob = new Blob([header + rows + '\n' + summary], {
-      type: 'text/csv',
-    });
+      const eventLines = events.map(
+        (e, i) =>
+          `${e.isHotspot ? 'Hotspot' : 'Event'} ${i + 1},${e.startTime.toISOString()},${e.endTime.toISOString()},` +
+          `${e.durationMinutes},${e.peakPm25.toFixed(1)},${e.averagePm25.toFixed(1)},` +
+          `${e.averageVehicleRatePerMinute?.toFixed(1) ?? 'n/a'},${e.sampleSize},` +
+          `${formatR(e.pearsonR)},${formatR(e.spearmanR)},` +
+          `${getCorrelationLabel(e.pearsonStrength)},${getCorrelationLabel(e.spearmanStrength)},` +
+          `${getVehicleDataQualityLabel(e.vehicleDataQuality)},${e.hotspotLabel}`,
+      );
+
+      const summary = [
+        '',
+        '',
+        'Summary',
+        `Range,${rangeLabel}`,
+        `Avg PM2.5,${avg.toFixed(1)}`,
+        `Max PM2.5,${max}`,
+        `Min PM2.5,${min}`,
+        `Spikes,${spikes}`,
+        `Vehicles (reset-aware total for this range),${totalV}`,
+        `Readings,${pmPoints.length}`,
+        `Traffic-Related Hotspots Detected,${events.filter((e) => e.isHotspot).length}`,
+        `Total PM2.5 Events Detected (hotspots + non-hotspot pollution events),${events.length}`,
+        `Events With Reliable Correlation (n>=${CORRELATION_MIN_SAMPLE_SIZE}),${
+          events.filter((e) => e.sampleSize >= CORRELATION_MIN_SAMPLE_SIZE)
+            .length
+        }`,
+        '',
+        'Detected Hotspots & PM2.5 Events',
+        'ID,Start,End,Duration(min),Peak PM2.5,Avg PM2.5,Avg Vehicles/min,Sample Size(min),Pearson r,Spearman r,Pearson Strength,Spearman Strength,Vehicle Data Quality,Classification',
+        ...eventLines,
+      ].join('\n');
+
+      return header + rows + '\n' + summary;
+    },
+    [formatR],
+  );
+
+  const downloadBlob = (blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadCsv = (csv: string, filename: string) => {
+    downloadBlob(new Blob([csv], { type: 'text/csv' }), filename);
+  };
+
+  const exportCSV = () => {
+    const rangeLabel = customMode
+      ? `${customDate} ${customStart}-${customEnd}`
+      : window.label;
+    const csv = buildCsv(rangeLabel, points, vehicleHistory, visibleEvents);
     const label = customMode
       ? `${customDate}_${customStart}-${customEnd}`.replace(/:/g, '')
       : window.label;
-    a.download = `pm25-history-${label}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadCsv(csv, `pm25-history-${label}.csv`);
+  };
+
+  // Exports the complete Firebase history as an Excel workbook with one tab
+  // per day. PM2.5 and vehicle history are recorded by separate processes, so
+  // each tab contains two independent session-grouped sections: the PM2.5
+  // readings (with vehicle counters attached at each reading) and the full
+  // vehicle history. A gap longer than SESSION_GAP_MINUTES starts a new
+  // session in either series, so interrupted recordings are never stitched
+  // together.
+  const exportAllXlsx = (includeVehicles = true) => {
+    if (allPoints.length === 0 && allVehicleHistory.length === 0) return;
+
+    // Group both datasets by local day (PM and vehicle timestamps represent
+    // the same instants, so a day in one is the same day in the other).
+    const pmByDay = new Map<string, HistoryPoint[]>();
+    for (const p of allPoints) {
+      const key = localDateKey(p.timestamp);
+      const arr = pmByDay.get(key);
+      if (arr) arr.push(p);
+      else pmByDay.set(key, [p]);
+    }
+    const vByDay = new Map<string, VehicleHistoryPoint[]>();
+    for (const v of allVehicleHistory) {
+      const key = localDateKey(v.timestamp);
+      const arr = vByDay.get(key);
+      if (arr) arr.push(v);
+      else vByDay.set(key, [v]);
+    }
+    const dayKeys = [...new Set([...pmByDay.keys(), ...vByDay.keys()])].sort();
+
+    const allPmVals = allPoints.map((p) => p.pm25);
+    const allAvg = allPmVals.reduce((a, b) => a + b, 0) / allPmVals.length;
+    const allMax = allPmVals.reduce((a, b) => (b > a ? b : a), -Infinity);
+    const allMin = allPmVals.reduce((a, b) => (b < a ? b : a), Infinity);
+    const allVehicles = includeVehicles
+      ? sumVehiclesResetAware(
+          allVehicleHistory.map((p) => ({
+            t: p.timestamp.getTime(),
+            total: totalVehiclesAtPoint(p),
+          })),
+        )
+      : 0;
+
+    const sessionCounts = dayKeys.reduce(
+      (acc, key) => {
+        acc.pm += splitIntoSessions(pmByDay.get(key) ?? [], SESSION_GAP_MS)
+          .length;
+        acc.vehicles += includeVehicles
+          ? splitIntoSessions(vByDay.get(key) ?? [], SESSION_GAP_MS).length
+          : 0;
+        return acc;
+      },
+      { pm: 0, vehicles: 0 },
+    );
+
+    // ── Overview tab ──
+    const overviewRows: XlsxCell[][] = [
+      [{ v: 'PM2.5 History — Complete Export', s: 1 }],
+      ['Device', 'esp32-sensor-01'],
+      ['Generated', formatLocal(new Date())],
+      ['Days with data (PM2.5 or vehicles)', dayKeys.length],
+      ['PM2.5 readings', allPoints.length],
+      ['Sessions (PM2.5)', sessionCounts.pm],
+      ['Avg PM2.5', allAvg.toFixed(1)],
+      ['Max PM2.5', allMax],
+      ['Min PM2.5', allMin],
+      ...(includeVehicles
+        ? [
+            ['Vehicle readings', allVehicleHistory.length],
+            ['Sessions (vehicles)', sessionCounts.vehicles],
+            ['Vehicles (reset-aware, all time)', allVehicles],
+          ]
+        : []),
+      [
+        'Traffic-related hotspots detected',
+        eventAnalysis.events.filter((e) => e.isHotspot).length,
+      ],
+      ['PM2.5 events detected', eventAnalysis.events.length],
+      [],
+      [
+        includeVehicles
+          ? 'Each tab below is one day, split into PM2.5 and vehicle sections.'
+          : 'Each tab below is one day with PM2.5 readings only (no vehicle data).',
+      ],
+      [
+        `Within each section, a gap longer than ${SESSION_GAP_MINUTES} minutes`,
+      ],
+      ['between readings starts a new session, so interrupted recordings'],
+      ['are not stitched together.'],
+    ];
+
+    const sheets: XlsxSheet[] = [
+      { name: 'Overview', rows: overviewRows },
+      ...dayKeys.map((key) => {
+        const dayPm = pmByDay.get(key) ?? [];
+        const dayV = vByDay.get(key) ?? [];
+        const hasPm = dayPm.length > 0;
+        const hasVehicles = dayV.length > 0;
+        const pmSessions = splitIntoSessions(dayPm, SESSION_GAP_MS);
+        const vSessions = splitIntoSessions(dayV, SESSION_GAP_MS);
+
+        // Nearest vehicle reading at or before t within this day (for pairing
+        // counters onto PM2.5 rows). Only pairs when the reading is recent —
+        // attaching counters from hours earlier over-reports traffic.
+        const vehiclesAt = (t: number): VehicleHistoryPoint | null => {
+          let match: VehicleHistoryPoint | null = null;
+          for (const vh of dayV) {
+            if (vh.timestamp.getTime() <= t) match = vh;
+            else break;
+          }
+          return match && t - match.timestamp.getTime() <= SESSION_GAP_MS
+            ? match
+            : null;
+        };
+
+        const pmVals = dayPm.map((p) => p.pm25);
+        const avg = hasPm
+          ? pmVals.reduce((a, b) => a + b, 0) / pmVals.length
+          : 0;
+        const max = hasPm
+          ? pmVals.reduce((a, b) => (b > a ? b : a), -Infinity)
+          : 0;
+        const min = hasPm
+          ? pmVals.reduce((a, b) => (b < a ? b : a), Infinity)
+          : 0;
+        const vehTotal = hasVehicles
+          ? sumVehiclesResetAware(
+              dayV.map((p) => ({
+                t: p.timestamp.getTime(),
+                total: totalVehiclesAtPoint(p),
+              })),
+            )
+          : 0;
+
+        const rows: XlsxCell[][] = [
+          [{ v: `Sensor History — ${key}`, s: 1 }],
+          [
+            `Sessions: ${pmSessions.length} PM + ${includeVehicles ? vSessions.length : 0} vehicle` +
+              (hasPm
+                ? `  |  PM2.5 readings: ${dayPm.length}  |  Avg PM2.5: ${avg.toFixed(1)}  |  Max: ${max}  |  Min: ${min}`
+                : '') +
+              (includeVehicles && hasVehicles
+                ? `  |  Vehicle readings: ${dayV.length}  |  Vehicles (reset-aware): ${vehTotal}`
+                : ''),
+          ],
+        ];
+
+        // ── PM2.5 section ──
+        if (hasPm) {
+          rows.push([{ v: 'PM2.5 Readings', s: 2 }]);
+          rows.push(
+            includeVehicles && hasVehicles
+              ? [
+                  { v: 'Timestamp', s: 1 },
+                  { v: 'PM2.5', s: 1 },
+                  { v: 'Car', s: 1 },
+                  { v: 'Jeep', s: 1 },
+                  { v: 'Truck', s: 1 },
+                  { v: 'Tricycle', s: 1 },
+                  { v: 'Motorcycle', s: 1 },
+                  { v: 'Bus', s: 1 },
+                ]
+              : [
+                  { v: 'Timestamp', s: 1 },
+                  { v: 'PM2.5', s: 1 },
+                ],
+          );
+          pmSessions.forEach((session, si) => {
+            rows.push([
+              { v: sessionHeader(`Session ${si + 1}`, session), s: 2 },
+            ]);
+            for (const p of session) {
+              if (!includeVehicles || !hasVehicles) {
+                rows.push([formatLocal(p.timestamp), p.pm25]);
+              } else {
+                const v = vehiclesAt(p.timestamp.getTime());
+                rows.push([
+                  formatLocal(p.timestamp),
+                  p.pm25,
+                  v ? v.Car : 0,
+                  v ? v.Jeep : 0,
+                  v ? v.Truck : 0,
+                  v ? v.Tricycle : 0,
+                  v ? v.Motorcycle : 0,
+                  v ? v.Bus : 0,
+                ]);
+              }
+            }
+            rows.push([]); // blank separator between sessions
+          });
+        } else {
+          rows.push(['No PM2.5 readings on this day.']);
+        }
+
+        // ── Vehicle section ──
+        if (includeVehicles && hasVehicles) {
+          rows.push([{ v: 'Vehicle Readings', s: 2 }]);
+          rows.push([
+            { v: 'Timestamp', s: 1 },
+            { v: 'Car', s: 1 },
+            { v: 'Jeep', s: 1 },
+            { v: 'Truck', s: 1 },
+            { v: 'Tricycle', s: 1 },
+            { v: 'Motorcycle', s: 1 },
+            { v: 'Bus', s: 1 },
+          ]);
+          vSessions.forEach((session, si) => {
+            rows.push([
+              {
+                v: sessionHeader(`Vehicle session ${si + 1}`, session),
+                s: 2,
+              },
+            ]);
+            for (const v of session) {
+              rows.push([
+                formatLocal(v.timestamp),
+                v.Car,
+                v.Jeep,
+                v.Truck,
+                v.Tricycle,
+                v.Motorcycle,
+                v.Bus,
+              ]);
+            }
+            rows.push([]); // blank separator between sessions
+          });
+        }
+
+        return { name: key, rows };
+      }),
+    ];
+
+    downloadBlob(
+      buildXlsxBlob(sheets),
+      includeVehicles
+        ? 'pm25-history-all-time.xlsx'
+        : 'pm25-history-all-time-pm-only.xlsx',
+    );
   };
 
   return (
@@ -479,8 +802,25 @@ export default function HistoryPage() {
             className='export-btn'
             onClick={exportCSV}
             disabled={points.length === 0}
+            title='Export the currently selected time window'
           >
             CSV
+          </button>
+          <button
+            className='export-btn'
+            onClick={() => exportAllXlsx()}
+            disabled={allPoints.length === 0 && allVehicleHistory.length === 0}
+            title='Export the entire history as an Excel workbook — one tab per day, sessions separated'
+          >
+            Export All (.xlsx)
+          </button>
+          <button
+            className='export-btn'
+            onClick={() => exportAllXlsx(false)}
+            disabled={allPoints.length === 0}
+            title='Export only the PM2.5 readings — no vehicle data'
+          >
+            PM2.5 Only
           </button>
         </div>
       </div>
@@ -512,7 +852,9 @@ export default function HistoryPage() {
             />
           </label>
           {!rangeValid && (
-            <span className='range-error'>End time must be after start time</span>
+            <span className='range-error'>
+              End time must be after start time
+            </span>
           )}
         </div>
       )}
@@ -540,19 +882,14 @@ export default function HistoryPage() {
           <span className='metric-value'>{totalVehicles}</span>
         </div>
         <div className='metric'>
-          <span className='metric-label'>Hotspot</span>
-          <span
-            className='metric-value'
-            style={{ color: getHotspotTierColor(hotspotSession.hotspotTier) }}
-          >
-            {getHotspotTierLabel(hotspotSession.hotspotTier)}
+          <span className='metric-label'>Hotspots</span>
+          <span className='metric-value highlight'>
+            {visibleEvents.filter((e) => e.isHotspot).length}
           </span>
         </div>
         <div className='metric'>
-          <span className='metric-label'>Traffic Baseline</span>
-          <span className='metric-value'>
-            {hotspotSession.sessionMeanVehicleRatePerMinute.toFixed(1)}
-          </span>
+          <span className='metric-label'>PM2.5 Events</span>
+          <span className='metric-value'>{visibleEvents.length}</span>
         </div>
         <div className='metric'>
           <span className='metric-label'>Readings</span>
@@ -561,56 +898,22 @@ export default function HistoryPage() {
       </div>
 
       <p className='hotspot-note'>
-        Hotspot tier uses 1-minute vehicle-rate windows, a 5-minute baseline
-        warm-up, and a 10-minute sustained run requirement, computed over the
-        full dataset regardless of the selected view range. A gap of more
-        than {HOTSPOT_SESSION_GAP_MINUTES} minutes between readings starts a
-        new session, resetting the baseline and any in-progress streak.
+        A <strong>traffic-related hotspot</strong> is a sustained PM2.5 event
+        (1-minute average at or above {PM25_ELEVATED_THRESHOLD} µg/m³,
+        tolerating up to {EVENT_CLOSE_GAP_MINUTES} consecutive below-threshold
+        minutes, minimum {EVENT_MIN_DURATION_MINUTES} minutes to be logged) that
+        also shows at least a moderate correlation (|r| ≥ 0.3, Pearson or
+        Spearman) with vehicle activity, computed over at least{' '}
+        {CORRELATION_MIN_SAMPLE_SIZE} minutes of reliable data. Sustained PM2.5
+        events that don't clear the correlation bar — e.g. weather-suppressed
+        sessions, or pollution from a non-traffic source — are still logged
+        below as plain pollution events, just not counted as hotspots. A gap of
+        more than {SESSION_GAP_MINUTES} minutes between readings is treated as
+        the device going offline and always closes any event in progress.
+        Vehicle-count decreases (counter restarts) are detected and excluded
+        from the affected minute's rate rather than producing a false negative
+        delta.
       </p>
-
-      <div className='hotspot-sensitivity'>
-        <h3>Hotspot Sensitivity Check</h3>
-        <div className='hotspot-sensitivity-grid'>
-          <div className='hotspot-sensitivity-col'>
-            <span className='hotspot-sensitivity-label'>10-min sustained</span>
-            <span
-              className='metric-value'
-              style={{
-                color: getHotspotTierColor(hotspotSession10.hotspotTier),
-              }}
-            >
-              {getHotspotTierLabel(hotspotSession10.hotspotTier)}
-            </span>
-            <span className='hotspot-sensitivity-sub'>
-              Peak reached: {getHotspotTierLabel(hotspotSession10.peakHotspotTier)}
-            </span>
-          </div>
-          <div className='hotspot-sensitivity-col'>
-            <span className='hotspot-sensitivity-label'>5-min sustained</span>
-            <span
-              className='metric-value'
-              style={{
-                color: getHotspotTierColor(hotspotSession5.hotspotTier),
-              }}
-            >
-              {getHotspotTierLabel(hotspotSession5.hotspotTier)}
-            </span>
-            <span className='hotspot-sensitivity-sub'>
-              Peak reached: {getHotspotTierLabel(hotspotSession5.peakHotspotTier)}
-            </span>
-          </div>
-          <div className='hotspot-sensitivity-col'>
-            <span className='hotspot-sensitivity-label'>Near misses</span>
-            <span className='metric-value'>
-              {hotspotSession10.maxElevatedRunLength}m elevated
-            </span>
-            <span className='hotspot-sensitivity-sub'>
-              {hotspotSession10.maxCriticalRunLength}m critical (longest
-              qualifying streak observed, threshold met or not)
-            </span>
-          </div>
-        </div>
-      </div>
 
       {loading ? (
         <div className='history-loading'>Loading history...</div>
@@ -659,6 +962,16 @@ export default function HistoryPage() {
                   label={{
                     value: 'Spike threshold',
                     fill: '#ff3333',
+                    fontSize: 10,
+                  }}
+                />
+                <ReferenceLine
+                  y={PM25_ELEVATED_THRESHOLD}
+                  stroke='#ffa500'
+                  strokeDasharray='2 4'
+                  label={{
+                    value: 'Event threshold',
+                    fill: '#ffa500',
                     fontSize: 10,
                   }}
                 />
@@ -746,6 +1059,84 @@ export default function HistoryPage() {
                 </ResponsiveContainer>
               )}
             </div>
+          </div>
+
+          {/* Detected PM2.5 Events + Hotspot classification */}
+          <div className='chart-section'>
+            <h3>Detected Hotspots &amp; PM2.5 Events</h3>
+            {visibleEvents.length === 0 ? (
+              <div className='history-empty'>
+                No PM2.5 events (≥{PM25_ELEVATED_THRESHOLD} µg/m³ sustained ≥
+                {EVENT_MIN_DURATION_MINUTES} min) in this time window.
+              </div>
+            ) : (
+              <div className='reading-table-scroll'>
+                <table className='reading-table'>
+                  <thead>
+                    <tr>
+                      <th>Start</th>
+                      <th>Duration</th>
+                      <th>Peak PM2.5</th>
+                      <th>Avg PM2.5</th>
+                      <th>Avg Vehicles/min</th>
+                      <th>n (min)</th>
+                      <th>Pearson r</th>
+                      <th>Spearman r</th>
+                      <th>Vehicle Data</th>
+                      <th>Classification</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleEvents.map((e: PmEvent, i: number) => (
+                      <tr key={i} className={e.isHotspot ? 'spike-row' : ''}>
+                        <td>
+                          {e.startTime.toLocaleString([], {
+                            month: 'short',
+                            day: '2-digit',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            hour12: false,
+                          })}
+                        </td>
+                        <td>{e.durationMinutes} min</td>
+                        <td>{e.peakPm25.toFixed(1)} µg/m³</td>
+                        <td>{e.averagePm25.toFixed(1)} µg/m³</td>
+                        <td>
+                          {e.averageVehicleRatePerMinute !== null
+                            ? e.averageVehicleRatePerMinute.toFixed(1)
+                            : '—'}
+                        </td>
+                        <td>{e.sampleSize}</td>
+                        <td
+                          style={{
+                            color: getCorrelationColor(e.pearsonStrength),
+                          }}
+                        >
+                          {formatR(e.pearsonR)} (
+                          {getCorrelationLabel(e.pearsonStrength)})
+                        </td>
+                        <td
+                          style={{
+                            color: getCorrelationColor(e.spearmanStrength),
+                          }}
+                        >
+                          {formatR(e.spearmanR)} (
+                          {getCorrelationLabel(e.spearmanStrength)})
+                        </td>
+                        <td>
+                          {getVehicleDataQualityLabel(e.vehicleDataQuality)}
+                        </td>
+                        <td
+                          style={{ color: e.isHotspot ? '#ff3333' : '#5a6978' }}
+                        >
+                          {e.hotspotLabel}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
 
           {/* Reading Table */}

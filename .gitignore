@@ -1,3 +1,8 @@
 pm2.5/.env
 pm2.5/.env.example
 pm2.5/RTDB_SECURITY.md
+/pm2.5/src/Data Fix
+/pm2.5/src/Lit
+/pm2.5/src/pm25_eesp32
+/pm2.5/src/Vehicle Count Readings
+/pm2.5/.agents
